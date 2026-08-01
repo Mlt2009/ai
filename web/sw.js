@@ -1,5 +1,5 @@
 /* Minimal service worker: makes the app installable and shell-cached. */
-const CACHE = "atlas-v1";
+const CACHE = "atlas-v2";
 const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/icon.svg"];
 
 self.addEventListener("install", (e) => {

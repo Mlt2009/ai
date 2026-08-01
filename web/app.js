@@ -146,6 +146,70 @@ function setTile(id, ok) {
 refreshTiles();
 setInterval(refreshTiles, 5000);
 
+// ── Settings panel: turn every agent on from your phone ──────────
+const settingsEl = document.getElementById("settings");
+const settingsMsg = document.getElementById("settings-msg");
+
+function renderServices(services) {
+  for (const [svc, s] of Object.entries(services || {})) {
+    const box = document.querySelector(`.svc[data-svc="${svc}"]`);
+    if (!box) continue;
+    const dot = box.querySelector(".dot");
+    dot.className = "dot " + (s.on ? "on" : "off");
+    box.querySelector(".svc-detail").textContent = s.detail || "";
+  }
+  const anyOff = Object.values(services || {}).some((s) => !s.on);
+  setStatus(anyOff ? "online — some agents off (⚙)" : "online — all agents live", true);
+}
+
+async function openSettings() {
+  settingsEl.classList.remove("hidden");
+  settingsMsg.textContent = "checking connections…";
+  try {
+    const { values, services } = await (await fetch("/api/settings")).json();
+    for (const inp of settingsEl.querySelectorAll("[data-key]")) {
+      const v = values[inp.dataset.key];
+      if (inp.type === "checkbox") inp.checked = !!v;
+      else if (v) inp.value = v;
+    }
+    renderServices(services);
+    settingsMsg.textContent = "";
+  } catch {
+    settingsMsg.textContent = "couldn't load settings";
+  }
+}
+
+async function saveSettings() {
+  const payload = {};
+  for (const inp of settingsEl.querySelectorAll("[data-key]")) {
+    if (inp.type === "checkbox") payload[inp.dataset.key] = inp.checked;
+    else if (inp.value.trim() && !inp.value.includes("••••"))
+      payload[inp.dataset.key] = inp.value.trim();
+  }
+  settingsMsg.textContent = "saving & testing connections…";
+  try {
+    const res = await (await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })).json();
+    renderServices(res.services);
+    const on = Object.values(res.services).filter((s) => s.on).length;
+    settingsMsg.textContent = `saved — ${on}/${Object.keys(res.services).length} services live`;
+    refreshTiles();
+  } catch {
+    settingsMsg.textContent = "save failed — is the server reachable?";
+  }
+}
+
+document.getElementById("settings-btn").onclick = openSettings;
+document.getElementById("settings-close").onclick = () => settingsEl.classList.add("hidden");
+document.getElementById("settings-save").onclick = saveSettings;
+settingsEl.addEventListener("click", (e) => { if (e.target === settingsEl) settingsEl.classList.add("hidden"); });
+
+// First run: if the brain is off, open settings automatically.
+fetch("/api/stats").then((r) => r.json()).then((s) => { if (!s.gemini) openSettings(); }).catch(() => {});
+
 // ── PWA ───────────────────────────────────────────────────────────
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
 

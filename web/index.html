@@ -17,8 +17,53 @@
       <h1>Atlas</h1>
       <div id="status" class="status">connecting…</div>
     </div>
+    <button id="settings-btn" title="Settings">⚙</button>
     <button id="reset" title="New conversation">⟳</button>
   </header>
+
+  <div id="settings" class="settings hidden">
+    <div class="settings-card">
+      <h2>Power up your agents</h2>
+      <p class="hint">Paste your keys — each service lights up green when it connects. Keys are stored only on your own server (.env).</p>
+
+      <div class="svc" data-svc="gemini">
+        <div class="svc-head"><span class="dot"></span><strong>Gemini brain</strong><span class="svc-detail"></span></div>
+        <input data-key="GEMINI_API_KEY" placeholder="GEMINI_API_KEY — aistudio.google.com/apikey" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="home_assistant">
+        <div class="svc-head"><span class="dot"></span><strong>Home Assistant</strong><span class="svc-detail"></span></div>
+        <input data-key="HA_URL" placeholder="HA_URL, e.g. http://homeassistant.local:8123" autocomplete="off">
+        <input data-key="HA_TOKEN" placeholder="HA_TOKEN — HA profile → Security → long-lived token" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="octoprint">
+        <div class="svc-head"><span class="dot"></span><strong>3D printer (OctoPrint)</strong><span class="svc-detail"></span></div>
+        <input data-key="OCTOPRINT_URL" placeholder="OCTOPRINT_URL, e.g. http://octopi.local" autocomplete="off">
+        <input data-key="OCTOPRINT_API_KEY" placeholder="OCTOPRINT_API_KEY" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="cups">
+        <div class="svc-head"><span class="dot"></span><strong>Paper printer</strong><span class="svc-detail"></span></div>
+        <input data-key="CUPS_PRINTER" placeholder="Printer name (blank = system default)" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="computer">
+        <div class="svc-head"><span class="dot"></span><strong>Computer control</strong><span class="svc-detail"></span></div>
+        <label class="toggle"><input type="checkbox" data-key="ALLOW_SHELL"> Allow shell commands (full power — use with care)</label>
+      </div>
+
+      <div class="svc" data-svc="data">
+        <div class="svc-head"><span class="dot"></span><strong>Real-time data</strong><span class="svc-detail"></span></div>
+      </div>
+
+      <div class="settings-actions">
+        <button id="settings-save">Save &amp; connect</button>
+        <button id="settings-close" class="ghost">Close</button>
+      </div>
+      <p id="settings-msg" class="hint"></p>
+    </div>
+  </div>
 
   <section id="tiles">
     <div class="tile"><span class="tile-label">CPU</span><span class="tile-value" id="t-cpu">–</span></div>
