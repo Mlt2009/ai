@@ -1,0 +1,9 @@
+# Desktop (A.D.A.) frontend — install on the computer with a mic/camera:
+#   pip install -r requirements.txt -r desktop/requirements.txt
+PySide6>=6.6
+opencv-python>=4.9
+Pillow>=10
+numpy>=1.26
+pyaudio>=0.2.13
+websockets>=12
+elevenlabs>=1.0
