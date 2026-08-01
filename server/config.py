@@ -36,7 +36,8 @@ def reload() -> None:
     load_dotenv(ENV_PATH, override=True)
 
     GEMINI_API_KEY = env("GEMINI_API_KEY")
-    GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.0-flash")
+    # "latest" alias tracks Google's newest fast model, so it never retires.
+    GEMINI_MODEL = env("GEMINI_MODEL", "gemini-flash-latest")
 
     HA_URL = env("HA_URL", "http://homeassistant.local:8123").rstrip("/")
     HA_TOKEN = env("HA_TOKEN")

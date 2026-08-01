@@ -179,8 +179,20 @@ async def websocket_endpoint(ws: WebSocket):
             text = (msg.get("text") or "").strip()
             if not text:
                 continue
-            async for event in atlas.respond(session_id, text):
-                await ws.send_json(event)
+            try:
+                async for event in atlas.respond(session_id, text):
+                    await ws.send_json(event)
+            except WebSocketDisconnect:
+                raise
+            except Exception as exc:
+                # Never drop the connection over a model/tool failure.
+                log.exception("turn failed")
+                atlas.reset(session_id)
+                await ws.send_json({
+                    "type": "reply",
+                    "text": f"Something went wrong on my end: {type(exc).__name__}. "
+                            "Check the model name in settings, or just try again.",
+                })
             await ws.send_json({"type": "turn_end"})
     except WebSocketDisconnect:
         atlas.reset(session_id)
