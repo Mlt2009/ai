@@ -1,4 +1,82 @@
-# Atlas — AI Companion
+# Artist — AI Companion
+
+**Artist** is a J.A.R.V.I.S.-inspired AI companion powered by **Gemini**.
+It serves four roles at once:
+
+| Role | Description |
+|---|---|
+| **Chat assistant** | Conversational dialogue that maintains context across turns |
+| **Coding companion** | Syntax checking, file reading, code review and generation |
+| **Swarm coordinator** | Routes tasks to specialist subagents, chains calls when needed |
+| **Token-saving helper** | Auto-compresses long context to keep sessions lean and fast |
+
+Artist also carries a curated library of **50 J.A.R.V.I.S.-inspired creative
+image/video generation prompts** — searchable by keyword or theme.
+
+## Run Artist (terminal chat)
+
+```bash
+# one-time setup
+pip install -r requirements.txt
+
+# set your key
+echo "GEMINI_API_KEY=your_key_here" >> .env
+
+# start chatting
+python artist.py
+```
+
+In-session commands:
+
+| Command | Effect |
+|---|---|
+| `/reset` | Clear conversation history |
+| `/compress` | Manually summarise context to save tokens |
+| `/team` | Show the active agent roster |
+| `/prompts` | List the 50 creative prompt themes |
+| `/help` | Show command reference |
+| `exit` / `quit` | End the session |
+
+### Artist's persona
+
+Artist adopts a **J.A.R.V.I.S.-style personality**:
+- Formal, precise, and dryly witty
+- Addresses the user as *Sir*
+- Demands clarity before acting on vague requests
+- Breaks complex tasks into actionable steps
+- Flags risks and misconfigurations proactively
+- Delivers concise, efficient responses
+
+### Agent team
+
+| Agent | What it does |
+|---|---|
+| **Coding** | `syntax_check`, `read_file`, `list_files` — grounded code answers |
+| **Creative** | `get_prompt`, `search_prompts`, `list_themes` — 50 creative prompts |
+| **Data** | Real-time weather, time, news, crypto |
+| **Computer** | CPU/RAM stats, processes, volume, open apps |
+| **Home** | Home Assistant smart-home control |
+| **Printer** | OctoPrint 3D + CUPS paper printing |
+
+### Creative prompt library
+
+Artist's creative agent holds **50 J.A.R.V.I.S.-inspired visual/video
+generation prompts** across themes including:
+
+`ai` · `ar` · `audio` · `automation` · `biotech` · `coding` · `command` ·
+`cybersecurity` · `diagnostics` · `energy` · `engineering` · `exploration` ·
+`hardware` · `infrastructure` · `manufacturing` · `media` · `mobility` ·
+`physics` · `productivity` · `quantum` · `research` · `robotics` · `space`
+
+Ask Artist to retrieve any prompt by number (1–50) or search by keyword/theme.
+
+---
+
+## Atlas — Web + Voice companion
+
+Artist's subagent team (Home, Printer, Computer, Data) is shared with
+**Atlas**, the real-time voice assistant you can run on your phone or the
+A.D.A. desktop app.
 
 A real-time voice AI companion powered by **Gemini**, with a team of specialist
 subagents running under one orchestrator. Talk to it from your **phone** (web
