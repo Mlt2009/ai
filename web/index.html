@@ -71,6 +71,23 @@
         <input data-key="RECEIPT_WIDTH" placeholder="Slip width in characters (32 = 58mm roll, 40 = 80mm)" autocomplete="off">
       </div>
 
+      <div class="svc" data-svc="invoicing">
+        <div class="svc-head"><span class="dot"></span><strong>Invoicing &amp; mileage</strong><span class="svc-detail"></span></div>
+        <input data-key="TAX_RATE" placeholder="Sales tax percent on invoices, e.g. 8.25" autocomplete="off">
+        <input data-key="INVOICE_TERMS_DAYS" placeholder="Payment terms in days (default 30)" autocomplete="off">
+        <input data-key="MILEAGE_RATE" placeholder="Per-mile deduction rate for YOUR tax year, e.g. 0.70" autocomplete="off">
+        <p class="hint">The mileage rate is deliberately blank — rates change every
+          tax year, so set the one published for yours rather than trusting a default.</p>
+      </div>
+
+      <div class="svc" data-svc="mail">
+        <div class="svc-head"><span class="dot"></span><strong>Email</strong><span class="svc-detail"></span></div>
+        <input data-key="SMTP_HOST" placeholder="SMTP_HOST — e.g. smtp.gmail.com" autocomplete="off">
+        <input data-key="SMTP_USER" placeholder="SMTP_USER — your address" autocomplete="off">
+        <input data-key="SMTP_PASSWORD" placeholder="SMTP_PASSWORD — Gmail needs an app password" autocomplete="off">
+        <input data-key="IMAP_HOST" placeholder="IMAP_HOST for reading the inbox — e.g. imap.gmail.com" autocomplete="off">
+      </div>
+
       <div class="svc" data-svc="files">
         <div class="svc-head"><span class="dot"></span><strong>File control</strong><span class="svc-detail"></span></div>
         <input data-key="FILE_ROOTS" placeholder="Folders I may touch (* = whole computer)" autocomplete="off">
@@ -155,6 +172,16 @@
     <div class="card">
       <h3>Agent team <span id="ws-agent-count" class="badge">0</span></h3>
       <div id="ws-agents" class="grid"></div>
+    </div>
+
+    <div class="card">
+      <h3>Owed to you <span id="ws-owed" class="badge">–</span></h3>
+      <div id="ws-invoices" class="rows"></div>
+    </div>
+
+    <div class="card">
+      <h3>Coming up <span id="ws-miles" class="badge">–</span></h3>
+      <div id="ws-schedule" class="rows"></div>
     </div>
 
     <div class="card">

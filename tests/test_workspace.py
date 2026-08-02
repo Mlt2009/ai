@@ -341,3 +341,197 @@ class ResponsesParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InvoiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        conn = ledger.connect()
+        conn.execute("DELETE FROM invoices")
+        conn.commit()
+
+    def test_numbering_is_sequential_within_the_year(self):
+        first = ledger.add_invoice("A", items=[{"name": "x", "amount": 10}])
+        second = ledger.add_invoice("B", items=[{"name": "y", "amount": 20}])
+        year = ledger.date.today().strftime("%Y")
+        self.assertEqual(first["number"], f"{year}-0001")
+        self.assertEqual(second["number"], f"{year}-0002")
+
+    def test_totals_are_computed_from_line_items(self):
+        invoice = ledger.add_invoice(
+            "Acme", items=[{"name": "labor", "amount": 120},
+                           {"name": "parts", "amount": 40}], tax_rate=8.25)
+        self.assertEqual(invoice["subtotal"], 160.0)
+        self.assertEqual(invoice["tax"], 13.2)
+        self.assertEqual(invoice["total"], 173.2)
+
+    def test_a_percent_and_a_fraction_mean_the_same_rate(self):
+        """8.25 and 0.0825 are both natural ways to say the same tax rate."""
+        as_percent = ledger.add_invoice("A", items=[{"name": "x", "amount": 100}],
+                                        tax_rate=8.25)
+        as_fraction = ledger.add_invoice("B", items=[{"name": "x", "amount": 100}],
+                                         tax_rate=0.0825)
+        self.assertEqual(as_percent["tax"], as_fraction["tax"])
+
+    def test_outstanding_tracks_paid_and_overdue(self):
+        ledger.add_invoice("Late", items=[{"name": "x", "amount": 100}],
+                           due_on="2020-01-01")
+        payable = ledger.add_invoice("Paid", items=[{"name": "x", "amount": 50}])
+        before = ledger.outstanding()
+        self.assertEqual(before["count"], 2)
+        self.assertEqual(before["total"], 150.0)
+        self.assertEqual(before["overdue_count"], 1)
+        self.assertEqual(before["overdue_total"], 100.0)
+
+        ledger.mark_invoice_paid(payable["id"])
+        after = ledger.outstanding()
+        self.assertEqual(after["count"], 1)
+        self.assertEqual(after["total"], 100.0)
+
+    def test_spoken_line_items_are_parsed(self):
+        from server.agents.invoice_agent import _items_from
+
+        items = _items_from("main line snake 120, camera inspection 40.50")
+        self.assertEqual([i["name"] for i in items],
+                         ["main line snake", "camera inspection"])
+        self.assertEqual([i["amount"] for i in items], [120.0, 40.5])
+
+    def test_an_item_with_no_number_still_records_the_label(self):
+        from server.agents.invoice_agent import _items_from
+
+        items = _items_from("callout")
+        self.assertEqual(items[0]["name"], "callout")
+        self.assertEqual(items[0]["amount"], 0.0)
+
+
+class MileageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        conn = ledger.connect()
+        conn.execute("DELETE FROM trips")
+        conn.commit()
+
+    def test_deduction_is_miles_times_rate(self):
+        trip = ledger.add_trip(42.5, "service call", rate=0.70)
+        self.assertEqual(trip["miles"], 42.5)
+        self.assertEqual(trip["deduction"], 29.75)
+
+    def test_totals_sum_over_a_period(self):
+        ledger.add_trip(10, rate=0.5, driven_on="2026-03-01")
+        ledger.add_trip(20, rate=0.5, driven_on="2026-03-15")
+        ledger.add_trip(30, rate=0.5, driven_on="2026-05-01")
+        march = ledger.mileage_totals(since="2026-03-01", until="2026-03-31")
+        self.assertEqual(march, {"trips": 2, "miles": 30.0, "deduction": 15.0})
+
+    def test_the_rate_is_not_hardcoded_to_a_published_figure(self):
+        """A stale IRS rate would put a wrong number on a tax return."""
+        self.assertEqual(config.MILEAGE_RATE, 0.0,
+                         "MILEAGE_RATE must default to 0 so the agent asks for it")
+
+
+class JobScheduleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        conn = ledger.connect()
+        conn.execute("DELETE FROM jobs")
+        conn.commit()
+
+    def test_spoken_times_become_sortable_iso(self):
+        from server.agents.jobs_agent import parse_when
+
+        today = ledger.date.today().isoformat()
+        self.assertEqual(parse_when("today 2pm"), f"{today}T14:00")
+        self.assertEqual(parse_when("today 09:30"), f"{today}T09:30")
+        self.assertEqual(parse_when("2026-08-05T14:00"), "2026-08-05T14:00")
+        self.assertEqual(parse_when("2026-08-05"), "2026-08-05T08:00")
+
+    def test_tomorrow_advances_a_day(self):
+        from datetime import timedelta
+
+        from server.agents.jobs_agent import parse_when
+
+        tomorrow = (ledger.date.today() + timedelta(days=1)).isoformat()
+        self.assertEqual(parse_when("tomorrow 8am"), f"{tomorrow}T08:00")
+
+    def test_unreadable_times_raise_rather_than_booking_the_wrong_slot(self):
+        from server.agents.jobs_agent import parse_when
+
+        with self.assertRaises(ValueError):
+            parse_when("sometime next week maybe")
+
+    def test_jobs_come_back_in_time_order(self):
+        ledger.add_job("second", "2026-08-05T14:00")
+        ledger.add_job("first", "2026-08-05T09:00")
+        self.assertEqual([j["title"] for j in ledger.list_jobs()], ["first", "second"])
+
+    def test_status_changes_stick(self):
+        job = ledger.add_job("clear drain", "2026-08-05T09:00")
+        ledger.update_job(job["id"], status="done")
+        self.assertEqual(ledger.get_job(job["id"])["status"], "done")
+        self.assertEqual(ledger.list_jobs(status="scheduled"), [])
+
+
+class PdfTests(unittest.TestCase):
+    def test_output_is_a_well_formed_pdf(self):
+        from server import pdf
+
+        blob = pdf.build("INVOICE 2026-0001\nTOTAL DUE  $173.20")
+        self.assertTrue(blob.startswith(b"%PDF-1.4"))
+        self.assertTrue(blob.rstrip().endswith(b"%%EOF"))
+        self.assertIn(b"/BaseFont /Courier", blob)
+        self.assertIn(b"(INVOICE 2026-0001) Tj", blob)
+
+    def test_the_xref_offsets_actually_point_at_their_objects(self):
+        from server import pdf
+
+        blob = pdf.build("hello")
+        tail = blob[blob.rindex(b"startxref"):]
+        xref_at = int(tail.split(b"\n")[1])
+        self.assertEqual(blob[xref_at:xref_at + 4], b"xref")
+        rows = blob[xref_at:].split(b"\n")[2:]
+        for number, row in enumerate(rows[1:], start=1):   # skip the free entry
+            if not row.strip() or row.startswith(b"trailer"):
+                break
+            offset = int(row.split()[0])
+            self.assertEqual(blob[offset:offset + len(f"{number} 0 obj")],
+                             f"{number} 0 obj".encode())
+
+    def test_long_documents_paginate(self):
+        from server import pdf
+
+        blob = pdf.build("\n".join(f"line {i}" for i in range(200)))
+        self.assertGreater(blob.count(b"/Type /Page /Parent"), 1)
+
+    def test_parentheses_and_backslashes_do_not_corrupt_the_stream(self):
+        from server import pdf
+
+        blob = pdf.build(r"Tax (8.25%) \ path")
+        self.assertIn(rb"(Tax \(8.25%\) \\ path) Tj", blob)
+
+
+class MailTests(unittest.TestCase):
+    """No network: only the message the agent would hand to SMTP."""
+
+    def test_a_message_with_an_attachment_is_assembled(self):
+        import tempfile as tf
+
+        from server.agents.mail_agent import _build
+
+        with tf.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as handle:
+            handle.write(b"%PDF-1.4 fake")
+            path = handle.name
+        message = _build("customer@example.com", "Invoice 2026-0001", "Attached.", path)
+        self.assertEqual(message["To"], "customer@example.com")
+        self.assertEqual(message["Subject"], "Invoice 2026-0001")
+        names = [part.get_filename() for part in message.iter_attachments()]
+        self.assertIn(Path(path).name, names)
+
+    def test_a_missing_attachment_is_reported_not_silently_dropped(self):
+        from server.agents.mail_agent import _build
+
+        with self.assertRaises(FileNotFoundError):
+            _build("a@b.com", "s", "b", "/no/such/file.pdf")
+
+    def test_sending_without_credentials_explains_what_is_missing(self):
+        from server.agents.mail_agent import _require_smtp
+
+        with self.assertRaises(RuntimeError) as caught:
+            _require_smtp()
+        self.assertIn("SMTP_HOST", str(caught.exception))

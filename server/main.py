@@ -133,6 +133,10 @@ async def workspace():
                     "total": r["total"], "category": r["category"]}
                    for r in ledger.list_receipts(limit=8)],
         "shopping": ledger.list_items()[:12],
+        "outstanding": ledger.outstanding(),
+        "schedule": ledger.list_jobs(
+            since=date.today().isoformat(), status="scheduled", limit=6),
+        "mileage": ledger.mileage_totals(since=f"{date.today().year}-01-01"),
         "photos": sorted((p.name for p in scan_agent.uploads_dir().glob("*.*")),
                          reverse=True)[:6],
     }
