@@ -31,12 +31,16 @@ a **council** that puts one question to every other AI you own at once.
 | **Shopping Agent** | The shopping list (add, check off, print), live price and deal lookups, spend so far this month |
 | **Council Agent** | One prompt to **every AI companion at once** — Claude, ChatGPT, Gemini, OpenRouter, or any OpenAI-compatible endpoint you add — side by side, or merged into one verdict |
 | **Files Agent** | Full control of the files on this computer (Windows/macOS/Linux): browse, search by name or content, read, write, move, copy, delete, zip, open |
+| **Invoice Agent** | Bills customers: numbered invoices, printed or PDF, mark paid, chase what's outstanding and overdue |
+| **Mileage Agent** | Business trip log with per-mile deduction totals for a period or tax year |
+| **Jobs Agent** | The working calendar: schedule, today's agenda, next job, `.ics` export, printed day sheet |
+| **Mail Agent** | Sends email — a note, a file, or an invoice as a PDF — and skims the inbox |
 | **Home Agent** | Controls Home Assistant: lights, switches, climate, scenes, any service call, sensor readings |
 | **Printer Agent** | OctoPrint 3D printer (status, temperatures, start/pause/resume/cancel jobs, print files) + paper printing via CUPS |
 | **Computer Agent** | Live CPU/RAM/disk/battery stats, top processes, volume, open apps & websites, optional shell commands |
 | **Data Agent** | Real-time weather + forecast (any city), date/time, news headlines, live crypto prices |
 
-All nine agents register their tools with **Atlas**, the orchestrator. Atlas
+All thirteen agents register their tools with **Atlas**, the orchestrator. Atlas
 runs on **either Gemini or OpenAI** — whichever key you have. It decides which
 agent to call, chains calls when needed, and answers back in natural speech.
 
@@ -135,6 +139,32 @@ worse than one that admits it can't check.
 
 `OPENAI_BASE_URL` points the brain at a proxy, an Azure gateway, or a local
 OpenAI-compatible server instead of `api.openai.com`.
+
+## Running the job: quote, schedule, drive, bill
+
+The four agents added after the first release cover the rest of a working day:
+
+```
+"book a drain clear for Acme tomorrow at 9"        → jobs
+"log 21 miles round trip to that job"              → mileage
+"invoice Acme main line snake 120, camera 40"      → invoice
+"email it to them"                                 → mail (PDF attached)
+"what's still owed?"                               → invoice
+```
+
+Invoices are numbered sequentially per year (`2026-0001`), totals are computed
+from the line items so they can't drift, and the printed sheet uses the same
+paper as the receipt slips. `TAX_RATE` and `INVOICE_TERMS_DAYS` set the
+defaults.
+
+**The mileage rate is deliberately not shipped with a value.** Per-mile
+deduction rates change every tax year, and a stale hardcoded figure would put a
+wrong number on a tax return. Set `MILEAGE_RATE` to the rate published for your
+tax year and jurisdiction; until you do, the agent refuses to log a trip and
+says so.
+
+Email is plain SMTP/IMAP — Gmail (with an app password), Fastmail, or your own
+server. PDFs are generated in-process with no extra dependency.
 
 ## Talking to all your AI companions at once
 

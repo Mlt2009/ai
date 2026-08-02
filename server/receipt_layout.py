@@ -115,3 +115,54 @@ def render(receipt: dict, width: int | None = None, title: str = "") -> str:
         lines.append("")
     lines.append(_center(config.RECEIPT_FOOTER, width))
     return "\n".join(lines)
+
+
+def render_invoice(invoice: dict, width: int | None = None) -> str:
+    """Render an invoice as a printable slip — same paper, different heading."""
+    width = max(32, min(int(width or config.RECEIPT_WIDTH), 120))
+    currency = invoice.get("currency") or "USD"
+    lines: list[str] = []
+
+    heading = config.BUSINESS_NAME or "INVOICE"
+    for line in _wrap(heading.upper(), width):
+        lines.append(_center(line, width))
+    if config.BUSINESS_PHONE:
+        lines.append(_center(config.BUSINESS_PHONE, width))
+    lines.append(_center("INVOICE", width))
+    lines.append(RULE_HEAVY * width)
+
+    lines.append(_row("Invoice:", invoice.get("number", ""), width))
+    lines.append(_row("Issued:", invoice.get("issued_on") or date.today().isoformat(), width))
+    if invoice.get("due_on"):
+        lines.append(_row("Due:", invoice["due_on"], width))
+    lines.append("")
+    lines.append("BILL TO")
+    lines.extend(_wrap(invoice.get("customer") or "(no customer)", width))
+    for part in str(invoice.get("address") or "").splitlines():
+        lines.extend(_wrap(part, width))
+
+    lines.append(RULE_LIGHT * width)
+    for item in invoice.get("items") or []:
+        amount = _money(item.get("amount") or 0, currency)
+        qty = str(item.get("qty") or "").strip()
+        name = str(item.get("name") or "item").strip()
+        label = f"{qty} x {name}" if qty and qty not in ("1", "1.0") else name
+        body = _wrap(label, max(4, width - len(amount) - 1))
+        lines.append(_row(body[0], amount, width))
+        lines.extend("  " + extra for extra in body[1:])
+
+    lines.append(RULE_LIGHT * width)
+    lines.append(_row("Subtotal", _money(invoice.get("subtotal") or 0, currency), width))
+    if invoice.get("tax"):
+        pct = round(float(invoice.get("tax_rate") or 0) * 100, 2)
+        lines.append(_row(f"Tax ({pct:g}%)", _money(invoice["tax"], currency), width))
+    lines.append(_row("TOTAL DUE", _money(invoice.get("total") or 0, currency), width))
+    lines.append(RULE_HEAVY * width)
+
+    if invoice.get("paid"):
+        lines.append(_center(f"PAID {invoice.get('paid_on', '')}".strip(), width))
+    if invoice.get("note"):
+        lines.extend(_wrap(invoice["note"], width))
+    lines.append("")
+    lines.append(_center(config.RECEIPT_FOOTER, width))
+    return "\n".join(lines)

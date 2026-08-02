@@ -16,7 +16,8 @@ from typing import AsyncIterator
 
 from . import brain, config
 from .agents import (ComputerAgent, CouncilAgent, DataAgent, FilesAgent, FinanceAgent,
-                     HomeAgent, PrinterAgent, ScanAgent, ShoppingAgent)
+                     HomeAgent, InvoiceAgent, JobsAgent, MailAgent, MileageAgent,
+                     PrinterAgent, ScanAgent, ShoppingAgent)
 from .agents.base import BaseAgent
 
 log = logging.getLogger("atlas")
@@ -30,6 +31,11 @@ subagents and use their tools to act in the real world:
   structured fields, converting to PDF, and printing the formatted slip
 - finance: expenses, spend summaries, budgets, tax totals, CSV export, printed
   expense reports
+- invoice: bill customers — create and number invoices, print or PDF them,
+  mark them paid, chase what's outstanding or overdue
+- mileage: log business trips and total the deduction for a tax year
+- jobs: the working calendar — schedule, agenda, next job, .ics export, day sheet
+- mail: send email (a note, a file, or an invoice as a PDF) and skim the inbox
 - shopping: the shopping list, live price and deal checks, spend so far
 - council: every other AI companion at once (Claude, ChatGPT, Gemini,
   OpenRouter, any endpoint the user added) — broadcast, ask one, or merge
@@ -53,6 +59,8 @@ Rules:
   plainly what's missing and how to fix it.
 - Deleting files and overwriting them cannot be undone. Confirm with the user
   before a destructive file action unless they were explicit about it.
+- Sending email and printing reach the outside world. Read the recipient and
+  the amount back to the user before sending an invoice.
 - Be proactive: after answering, offer a brief useful follow-up when natural.
 """
 
@@ -60,7 +68,8 @@ MAX_TOOL_ROUNDS = 8
 
 
 def build_team() -> dict[str, BaseAgent]:
-    agents = (ScanAgent(), FinanceAgent(), ShoppingAgent(), CouncilAgent(), FilesAgent(),
+    agents = (ScanAgent(), FinanceAgent(), InvoiceAgent(), MileageAgent(), JobsAgent(),
+              ShoppingAgent(), MailAgent(), CouncilAgent(), FilesAgent(),
               ComputerAgent(), PrinterAgent(), HomeAgent(), DataAgent())
     return {a.name: a for a in agents}
 

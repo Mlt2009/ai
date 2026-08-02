@@ -263,6 +263,37 @@ async function loadWorkspace() {
   }
   if (!data.recent.length) recent.appendChild(el("p", "hint", "No expenses yet — scan a receipt above."));
 
+  // Money owed to you, overdue first.
+  const owed = data.outstanding || { count: 0, total: 0, invoices: [] };
+  document.getElementById("ws-owed").textContent =
+    owed.count ? money(owed.total) : "all paid";
+  const invoices = document.getElementById("ws-invoices");
+  invoices.innerHTML = "";
+  for (const invoice of owed.invoices.slice(0, 8)) {
+    const row = el("div", "row");
+    row.appendChild(el("span", "row-main", `${invoice.number}  ${invoice.customer}`));
+    row.appendChild(el("span", "row-sub", invoice.overdue ? "OVERDUE" : (invoice.due_on || "")));
+    row.appendChild(el("span", "row-amount", money(invoice.total)));
+    if (invoice.overdue) row.style.borderLeft = "3px solid #ff7d7d";
+    invoices.appendChild(row);
+  }
+  if (!owed.count) invoices.appendChild(el("p", "hint", "Nothing outstanding — every invoice is paid."));
+
+  // Schedule + mileage this year.
+  const mileage = data.mileage || { miles: 0, deduction: 0 };
+  document.getElementById("ws-miles").textContent =
+    `${mileage.miles.toLocaleString()} mi · ${money(mileage.deduction)}`;
+  const schedule = document.getElementById("ws-schedule");
+  schedule.innerHTML = "";
+  for (const job of data.schedule || []) {
+    const [day, clock] = String(job.starts_at).split("T");
+    const row = el("div", "row");
+    row.appendChild(el("span", "row-main", job.title));
+    row.appendChild(el("span", "row-sub", `${day} ${clock || ""}`.trim()));
+    schedule.appendChild(row);
+  }
+  if (!(data.schedule || []).length) schedule.appendChild(el("p", "hint", "Nothing scheduled — say \u201cbook a drain clear tomorrow at 9\u201d."));
+
   // Shopping list.
   const shopping = document.getElementById("ws-shopping");
   shopping.innerHTML = "";
