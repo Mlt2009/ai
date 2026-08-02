@@ -16,7 +16,7 @@ import time
 
 import httpx
 
-from .. import config
+from .. import brain, config
 from .base import BaseAgent, tool
 
 TIMEOUT = 90.0
@@ -204,20 +204,17 @@ class CouncilAgent(BaseAgent):
         if len(answered) == 1:
             return {"prompt": prompt, "verdict": answered[0]["answer"],
                     "sources": [answered[0]["companion"]], "results": results}
-        if not config.GEMINI_API_KEY:
+        if not brain.provider():
             return {"prompt": prompt, "results": results,
-                    "note": "answers returned unmerged — merging needs GEMINI_API_KEY"}
+                    "note": "answers returned unmerged — merging needs a Gemini or "
+                            "OpenAI key"}
 
         transcript = "\n\n".join(
             f"### {r['companion']} ({r['model']})\n{r['answer']}" for r in answered)
-        from google import genai
-
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-        merged = await client.aio.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=f"Several AI assistants answered the same question. Write one "
-                     f"short spoken-style answer that states what they agree on, and "
-                     f"names any point where they disagree. Do not use markdown.\n\n"
-                     f"QUESTION: {prompt}\n\n{transcript}")
-        return {"prompt": prompt, "verdict": (merged.text or "").strip(),
+        verdict = await brain.complete(
+            f"Several AI assistants answered the same question. Write one short "
+            f"spoken-style answer that states what they agree on, and names any point "
+            f"where they disagree. Do not use markdown.\n\n"
+            f"QUESTION: {prompt}\n\n{transcript}")
+        return {"prompt": prompt, "verdict": verdict,
                 "sources": [r["companion"] for r in answered], "results": results}

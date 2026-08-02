@@ -14,7 +14,7 @@ ENV_PATH = ROOT / ".env"
 
 # Keys the Settings panel is allowed to manage.
 EDITABLE_KEYS = [
-    "GEMINI_API_KEY", "GEMINI_MODEL",
+    "GEMINI_API_KEY", "GEMINI_MODEL", "BRAIN_PROVIDER",
     "HA_URL", "HA_TOKEN",
     "OCTOPRINT_URL", "OCTOPRINT_API_KEY",
     "CUPS_PRINTER",
@@ -23,7 +23,7 @@ EDITABLE_KEYS = [
     "ALLOW_SHELL",
     # AI companions the Council agent broadcasts to
     "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
-    "OPENAI_API_KEY", "OPENAI_MODEL",
+    "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
     "OPENROUTER_API_KEY", "OPENROUTER_MODEL",
     "COMPANION_ENDPOINTS",
     # Receipt / print layout
@@ -52,8 +52,10 @@ def reload() -> None:
     global GEMINI_API_KEY, GEMINI_MODEL, HA_URL, HA_TOKEN
     global OCTOPRINT_URL, OCTOPRINT_API_KEY, CUPS_PRINTER
     global HOST, PORT, WEATHER_LAT, WEATHER_LON, ALLOW_SHELL, DATA_DIR
+    global BRAIN_PROVIDER
     global ANTHROPIC_API_KEY, ANTHROPIC_MODEL, OPENAI_API_KEY, OPENAI_MODEL
     global OPENROUTER_API_KEY, OPENROUTER_MODEL, COMPANION_ENDPOINTS
+    global OPENAI_BASE_URL
     global BUSINESS_NAME, BUSINESS_PHONE, RECEIPT_WIDTH, RECEIPT_FOOTER
     global FILE_ROOTS, ALLOW_FILE_WRITE, ACCESS_TOKEN
 
@@ -62,6 +64,10 @@ def reload() -> None:
     GEMINI_API_KEY = env("GEMINI_API_KEY")
     # "latest" alias tracks Google's newest fast model, so it never retires.
     GEMINI_MODEL = env("GEMINI_MODEL", "gemini-flash-latest")
+
+    # Which model drives Atlas: "auto" (Gemini if keyed, else OpenAI),
+    # or pin one with "gemini" / "openai".
+    BRAIN_PROVIDER = env("BRAIN_PROVIDER", "auto").lower()
 
     HA_URL = env("HA_URL", "http://homeassistant.local:8123").rstrip("/")
     HA_TOKEN = env("HA_TOKEN")
@@ -86,6 +92,8 @@ def reload() -> None:
     ANTHROPIC_MODEL = env("ANTHROPIC_MODEL", "claude-opus-5")
     OPENAI_API_KEY = env("OPENAI_API_KEY")
     OPENAI_MODEL = env("OPENAI_MODEL", "gpt-4o")
+    # Point at a proxy, Azure gateway or local server if you don't use api.openai.com
+    OPENAI_BASE_URL = env("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
     OPENROUTER_MODEL = env("OPENROUTER_MODEL", "openrouter/auto")
     # name|base_url|model|api_key, comma separated — any OpenAI-compatible server

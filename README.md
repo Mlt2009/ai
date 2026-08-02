@@ -36,9 +36,9 @@ a **council** that puts one question to every other AI you own at once.
 | **Computer Agent** | Live CPU/RAM/disk/battery stats, top processes, volume, open apps & websites, optional shell commands |
 | **Data Agent** | Real-time weather + forecast (any city), date/time, news headlines, live crypto prices |
 
-All nine agents register their tools with **Atlas**, the Gemini-powered
-orchestrator. Gemini decides which agent to call, chains calls when needed,
-and answers back in natural speech.
+All nine agents register their tools with **Atlas**, the orchestrator. Atlas
+runs on **either Gemini or OpenAI** — whichever key you have. It decides which
+agent to call, chains calls when needed, and answers back in natural speech.
 
 ## Quick start (server + phone)
 
@@ -46,8 +46,12 @@ and answers back in natural speech.
 ./run.sh            # first run creates .venv and .env, then re-run
 ```
 
-1. Put your keys in `.env` (only `GEMINI_API_KEY` is required — free at
-   [aistudio.google.com/apikey](https://aistudio.google.com/apikey)).
+1. Put **one** model key in `.env` — Atlas runs on either:
+   - `OPENAI_API_KEY` ([platform.openai.com](https://platform.openai.com/api-keys)) —
+     keep `OPENAI_MODEL` vision-capable (`gpt-4o`) so receipt scanning works, or
+   - `GEMINI_API_KEY` (free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey))
+
+   With both set, Gemini drives by default; `BRAIN_PROVIDER=openai` pins OpenAI.
 2. `./run.sh` again. It prints a URL **and a QR code**.
 3. On your phone (same Wi-Fi): scan the QR code, then use your browser's
    **"Add to Home Screen"** — Atlas installs like a native app.
@@ -110,6 +114,28 @@ and `RECEIPT_WIDTH` to match your paper (32 = 58mm roll, 40 = 80mm, 64 =
 letter). Amounts come from a real structured parse, so a receipt whose layout
 moves still reads correctly — nothing depends on which line a value landed on.
 
+## Running on OpenAI instead of Gemini
+
+Everything that needs a model goes through one layer (`server/brain.py`), so a
+single OpenAI key powers the whole workspace: tool-calling orchestration,
+reading receipts from photos, and merging the council's answers.
+
+```bash
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o      # must be vision-capable to scan receipts
+BRAIN_PROVIDER=openai    # optional — only needed if a Gemini key is also present
+```
+
+One gap worth knowing: **live price checks need a model that can search the
+web.** Gemini does it through Google Search grounding; on OpenAI it goes through
+the Responses API's `web_search` tool, which not every model or account has. If
+it isn't available, `price_check` returns an error saying so — it will not
+guess a price from memory, because a shopping companion that invents prices is
+worse than one that admits it can't check.
+
+`OPENAI_BASE_URL` points the brain at a proxy, an Azure gateway, or a local
+OpenAI-compatible server instead of `api.openai.com`.
+
 ## Talking to all your AI companions at once
 
 Fill in any of `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (ChatGPT),
@@ -157,7 +183,9 @@ how each Gemini feature works.
 
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` | The brain — required |
+| `OPENAI_API_KEY` / `GEMINI_API_KEY` | The brain — **one of these is required** |
+| `BRAIN_PROVIDER` | `auto` (default), `gemini` or `openai` |
+| `OPENAI_MODEL`, `OPENAI_BASE_URL` | OpenAI model (vision-capable for scanning) and endpoint |
 | `HA_URL`, `HA_TOKEN` | Home Assistant URL + long-lived access token |
 | `OCTOPRINT_URL`, `OCTOPRINT_API_KEY` | 3D printer control |
 | `CUPS_PRINTER` | Paper printer name (blank = system default) |

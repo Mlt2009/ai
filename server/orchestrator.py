@@ -14,7 +14,7 @@ import json
 import logging
 from typing import AsyncIterator
 
-from . import config
+from . import brain, config
 from .agents import (ComputerAgent, CouncilAgent, DataAgent, FilesAgent, FinanceAgent,
                      HomeAgent, PrinterAgent, ScanAgent, ShoppingAgent)
 from .agents.base import BaseAgent
@@ -84,10 +84,16 @@ class Orchestrator:
         self._client = None
         self._chat_config = None
         self._sessions: dict[str, object] = {}  # per-client chat sessions
-        if config.GEMINI_API_KEY:
+        self.provider = brain.provider()
+        if self.provider == "gemini":
             self._init_gemini()
+        elif self.provider == "openai":
+            self._init_openai()
         else:
-            log.warning("GEMINI_API_KEY not set — running in offline mode")
+            log.warning("no GEMINI_API_KEY or OPENAI_API_KEY — running in offline mode")
+
+    def tool_count(self) -> int:
+        return sum(len(a.tool_declarations()) for a in self.agents.values())
 
     # ── Gemini setup ──────────────────────────────────────────────
 
@@ -98,13 +104,24 @@ class Orchestrator:
         self._client = genai.Client(api_key=config.GEMINI_API_KEY)
         declarations = []
         for agent in self.agents.values():
-            declarations.extend(agent.tool_declarations())
+            declarations.extend(agent.gemini_declarations())
         self._chat_config = types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             tools=[types.Tool(function_declarations=declarations)],
         )
         log.info("Gemini ready with %d tools from %d subagents",
                  len(declarations), len(self.agents))
+
+    # ── OpenAI setup ──────────────────────────────────────────────
+
+    def _init_openai(self) -> None:
+        """No SDK client to build — we own the history and post each turn."""
+        self._tools = []
+        for agent in self.agents.values():
+            self._tools.extend(agent.openai_declarations())
+        self._client = "openai"  # marks "we have a brain" for respond()
+        log.info("OpenAI ready (%s) with %d tools from %d subagents",
+                 config.OPENAI_MODEL, len(self._tools), len(self.agents))
 
     def _chat(self, session_id: str):
         chat = self._sessions.get(session_id)
@@ -121,8 +138,12 @@ class Orchestrator:
         """Yield events for one user turn: {'type': 'tool'|'tool_result'|'reply', ...}."""
         if self._client is None:
             yield {"type": "reply",
-                   "text": "I'm running without a brain right now — add your "
-                           "GEMINI_API_KEY to the .env file and restart me."}
+                   "text": "I'm running without a brain right now — add a Gemini "
+                           "or OpenAI key in Settings and I'll wake up."}
+            return
+        if self.provider == "openai":
+            async for event in self._respond_openai(session_id, text):
+                yield event
             return
 
         from google.genai import types
@@ -152,6 +173,40 @@ class Orchestrator:
 
         yield {"type": "reply",
                "text": "I hit my tool-call limit on that one — try breaking the request into smaller steps."}
+
+    # ── OpenAI turn ───────────────────────────────────────────────
+
+    async def _respond_openai(self, session_id: str, text: str) -> AsyncIterator[dict]:
+        """Same loop, OpenAI's wire format. We keep the history ourselves."""
+        history = self._sessions.get(session_id)
+        if not isinstance(history, list):
+            history = [{"role": "system", "content": SYSTEM_PROMPT}]
+            self._sessions[session_id] = history
+        history.append({"role": "user", "content": text})
+
+        for _ in range(MAX_TOOL_ROUNDS):
+            message = await brain.openai_chat(history, self._tools)
+            calls = brain.parse_tool_calls(message)
+            # The assistant turn must go back verbatim, tool_calls included.
+            history.append({"role": "assistant",
+                            "content": message.get("content") or "",
+                            **({"tool_calls": message["tool_calls"]}
+                               if message.get("tool_calls") else {})})
+            if not calls:
+                yield {"type": "reply", "text": (message.get("content") or "").strip()
+                       or "Sorry, I came up empty on that one."}
+                return
+            for call in calls:
+                yield {"type": "tool", "name": call["name"], "args": call["args"]}
+                result = await execute_tool(self.agents, call["name"], call["args"])
+                yield {"type": "tool_result", "name": call["name"],
+                       "result": json.loads(json.dumps(result, default=str))}
+                history.append({"role": "tool", "tool_call_id": call["id"],
+                                "content": json.dumps(result, default=str)[:8000]})
+
+        yield {"type": "reply",
+               "text": "I hit my tool-call limit on that one — try breaking the request "
+                       "into smaller steps."}
 
     def reset(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

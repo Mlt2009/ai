@@ -17,7 +17,7 @@ os.environ["DATA_DIR"] = _TMP.name
 os.environ["FILE_ROOTS"] = _TMP.name
 os.environ["ALLOW_FILE_WRITE"] = "false"
 
-from server import config, ledger, receipt_layout  # noqa: E402
+from server import brain, config, ledger, receipt_layout  # noqa: E402
 from server.agents import council_agent, files_agent, scan_agent  # noqa: E402
 
 config.reload()
@@ -201,6 +201,118 @@ class CompanionRegistryTests(unittest.TestCase):
         claude = [c for c in council_agent.companions() if c["name"] == "claude"]
         self.assertEqual(len(claude), 1)
         self.assertEqual(claude[0]["kind"], "anthropic")
+
+
+class BrainSelectionTests(unittest.TestCase):
+    """One key — either key — has to be enough to run the whole workspace."""
+
+    def tearDown(self) -> None:
+        for key in ("GEMINI_API_KEY", "OPENAI_API_KEY", "BRAIN_PROVIDER"):
+            os.environ.pop(key, None)
+        config.reload()
+
+    def _set(self, **env):
+        for key, value in env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        config.reload()
+
+    def test_no_keys_means_no_brain(self):
+        self._set()
+        self.assertEqual(brain.provider(), "")
+        with self.assertRaises(brain.NoBrain):
+            brain.require()
+
+    def test_openai_key_alone_is_enough(self):
+        self._set(OPENAI_API_KEY="sk-test")
+        self.assertEqual(brain.provider(), "openai")
+        self.assertEqual(brain.model_name(), config.OPENAI_MODEL)
+
+    def test_gemini_key_alone_is_enough(self):
+        self._set(GEMINI_API_KEY="g-test")
+        self.assertEqual(brain.provider(), "gemini")
+
+    def test_gemini_wins_by_default_when_both_are_set(self):
+        self._set(GEMINI_API_KEY="g-test", OPENAI_API_KEY="sk-test")
+        self.assertEqual(brain.provider(), "gemini")
+
+    def test_provider_can_be_pinned(self):
+        self._set(GEMINI_API_KEY="g-test", OPENAI_API_KEY="sk-test",
+                  BRAIN_PROVIDER="openai")
+        self.assertEqual(brain.provider(), "openai")
+
+    def test_pinning_a_provider_without_its_key_reports_no_brain(self):
+        self._set(OPENAI_API_KEY="sk-test", BRAIN_PROVIDER="gemini")
+        self.assertEqual(brain.provider(), "")
+
+
+class ToolSchemaTests(unittest.TestCase):
+    """A tool is declared once and both brains have to be able to call it."""
+
+    def setUp(self) -> None:
+        from server.agents import ShoppingAgent
+
+        self.agent = ShoppingAgent()
+
+    def _find(self, decls, name, unwrap=False):
+        for decl in decls:
+            body = decl["function"] if unwrap else decl
+            if body["name"] == name:
+                return body
+        self.fail(f"{name} missing from declarations")
+
+    def test_openai_declarations_are_wrapped_functions(self):
+        decl = self._find(self.agent.openai_declarations(), "shopping__add_to_list",
+                          unwrap=True)
+        self.assertEqual(self.agent.openai_declarations()[0]["type"], "function")
+        self.assertEqual(decl["parameters"]["type"], "object")
+        self.assertEqual(decl["parameters"]["properties"]["item"]["type"], "string")
+        self.assertEqual(decl["parameters"]["required"], ["item"])
+
+    def test_gemini_declarations_use_upper_case_types(self):
+        decl = self._find(self.agent.gemini_declarations(), "shopping__add_to_list")
+        self.assertEqual(decl["parameters"]["type"], "OBJECT")
+        self.assertEqual(decl["parameters"]["properties"]["item"]["type"], "STRING")
+
+    def test_both_brains_see_the_same_tools(self):
+        neutral = {d["name"] for d in self.agent.tool_declarations()}
+        gemini = {d["name"] for d in self.agent.gemini_declarations()}
+        openai = {d["function"]["name"] for d in self.agent.openai_declarations()}
+        self.assertEqual(neutral, gemini)
+        self.assertEqual(neutral, openai)
+
+
+class ToolCallParsingTests(unittest.TestCase):
+    def test_arguments_are_decoded(self):
+        message = {"tool_calls": [{"id": "call_1", "type": "function", "function": {
+            "name": "shopping__add_to_list", "arguments": '{"item": "milk", "qty": "2"}'}}]}
+        self.assertEqual(brain.parse_tool_calls(message),
+                         [{"id": "call_1", "name": "shopping__add_to_list",
+                           "args": {"item": "milk", "qty": "2"}}])
+
+    def test_malformed_arguments_degrade_to_empty_rather_than_crashing(self):
+        message = {"tool_calls": [{"id": "c", "type": "function", "function": {
+            "name": "x", "arguments": "{not json"}}]}
+        self.assertEqual(brain.parse_tool_calls(message)[0]["args"], {})
+
+    def test_a_plain_answer_has_no_tool_calls(self):
+        self.assertEqual(brain.parse_tool_calls({"content": "hello"}), [])
+
+
+class ResponsesParsingTests(unittest.TestCase):
+    def test_convenience_field_is_preferred(self):
+        self.assertEqual(brain._responses_text({"output_text": " $12.99 at Ace "}),
+                         "$12.99 at Ace")
+
+    def test_falls_back_to_walking_the_output_array(self):
+        body = {"output": [{"content": [{"type": "output_text", "text": "line one"},
+                                        {"type": "output_text", "text": "line two"}]}]}
+        self.assertEqual(brain._responses_text(body), "line one\nline two")
+
+    def test_an_unrecognised_shape_yields_empty_not_an_exception(self):
+        self.assertEqual(brain._responses_text({"weird": True}), "")
 
 
 if __name__ == "__main__":

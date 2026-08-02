@@ -20,7 +20,7 @@ from fastapi import Body, FastAPI, File, Request, UploadFile, WebSocket, WebSock
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, ledger, receipt_layout
+from . import brain, config, ledger, receipt_layout
 from .agents import council_agent, scan_agent
 from .orchestrator import Orchestrator
 
@@ -77,7 +77,7 @@ async def live_stats():
     return {
         "cpu": psutil.cpu_percent(interval=0.1),
         "mem": vm.percent,
-        "gemini": bool(config.GEMINI_API_KEY),
+        "gemini": bool(brain.provider()),
         "home_assistant": bool(config.HA_TOKEN),
         "octoprint": bool(config.OCTOPRINT_API_KEY),
     }
@@ -156,16 +156,11 @@ async def _service_checks() -> dict:
     """Live reachability tests for every integration (best-effort, fast)."""
 
     async def check_gemini():
-        if not config.GEMINI_API_KEY:
-            return {"on": False, "detail": "no API key"}
+        """The brain — Gemini or OpenAI, whichever key is configured."""
         try:
-            from google import genai
-            client = genai.Client(api_key=config.GEMINI_API_KEY)
-            await asyncio.wait_for(
-                client.aio.models.get(model=config.GEMINI_MODEL), timeout=6)
-            return {"on": True, "detail": f"connected · {config.GEMINI_MODEL}"}
+            return await asyncio.wait_for(brain.check(), timeout=8)
         except Exception as exc:
-            return {"on": False, "detail": f"key set but check failed: {type(exc).__name__}"}
+            return {"on": False, "detail": f"check failed: {type(exc).__name__}"}
 
     async def check_ha():
         if not config.HA_TOKEN:

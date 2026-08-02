@@ -43,14 +43,20 @@
       <p class="hint">Paste your keys — each service lights up green when it connects. Keys are stored only on your own server (.env).</p>
 
       <div class="svc" data-svc="gemini">
-        <div class="svc-head"><span class="dot"></span><strong>Gemini brain</strong><span class="svc-detail"></span></div>
-        <input data-key="GEMINI_API_KEY" placeholder="GEMINI_API_KEY — aistudio.google.com/apikey" autocomplete="off">
+        <div class="svc-head"><span class="dot"></span><strong>Brain</strong><span class="svc-detail"></span></div>
+        <p class="hint"><strong>Either key runs everything</strong> — the orchestrator,
+          reading receipts from photos, and merging the council. Fill in one.</p>
+        <input data-key="OPENAI_API_KEY" placeholder="OPENAI_API_KEY — platform.openai.com/api-keys" autocomplete="off">
+        <input data-key="OPENAI_MODEL" placeholder="OpenAI model (default gpt-4o — needs vision for receipts)" autocomplete="off">
+        <input data-key="GEMINI_API_KEY" placeholder="GEMINI_API_KEY — free at aistudio.google.com/apikey" autocomplete="off">
+        <input data-key="BRAIN_PROVIDER" placeholder="which one drives: auto (default), openai, gemini" autocomplete="off">
       </div>
 
       <div class="svc" data-svc="council">
         <div class="svc-head"><span class="dot"></span><strong>AI companions (broadcast)</strong><span class="svc-detail"></span></div>
+        <p class="hint">Whichever brain key you set above already joins the council.
+          Add more here to broadcast wider.</p>
         <input data-key="ANTHROPIC_API_KEY" placeholder="ANTHROPIC_API_KEY — Claude" autocomplete="off">
-        <input data-key="OPENAI_API_KEY" placeholder="OPENAI_API_KEY — ChatGPT" autocomplete="off">
         <input data-key="OPENROUTER_API_KEY" placeholder="OPENROUTER_API_KEY — everything else" autocomplete="off">
         <input data-key="COMPANION_ENDPOINTS" placeholder="extra: name|http://host/v1|model|key, comma separated" autocomplete="off">
         <p class="hint">The last box adds any OpenAI-compatible endpoint — a local

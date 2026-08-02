@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from .. import config, ledger
+from .. import brain, config, ledger
 from .base import BaseAgent, tool
 from .scan_agent import print_slip
 
@@ -89,21 +89,15 @@ class ShoppingAgent(BaseAgent):
                                                 "pipe at Home Depot'"},
     )
     async def price_check(self, query: str):
-        if not config.GEMINI_API_KEY:
-            return {"error": "price lookups need GEMINI_API_KEY (Settings ⚙)"}
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-        response = await client.aio.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=f"Current prices and where to buy: {query}. Give the typical price "
-                     f"range, the cheapest retailer you can verify, and the date of the "
-                     f"information. Be brief and say plainly if you cannot verify a price.",
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())]),
-        )
-        return {"query": query, "answer": (response.text or "").strip()}
+        try:
+            answer = await brain.web_answer(
+                f"Current prices and where to buy: {query}. Give the typical price "
+                f"range, the cheapest retailer you can verify, and the date of the "
+                f"information. Be brief and say plainly if you cannot verify a price.")
+        except Exception as exc:
+            # Never guess a price from memory — say we couldn't check.
+            return {"query": query, "error": f"{exc}"}
+        return {"query": query, "answer": answer, "grounded_by": brain.provider()}
 
     @tool("How much has been spent on shopping-type categories so far this month.")
     async def spend_so_far(self):

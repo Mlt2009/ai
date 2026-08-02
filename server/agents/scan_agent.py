@@ -1,22 +1,21 @@
 """Scan Agent — phone camera in, structured receipt + printed slip out.
 
 Replaces the fragile phone-shortcut pipeline (OCR, split on newlines, take
-lines 15–28) with a real parse: the photo goes to Gemini vision, comes back
-as structured fields, gets stored in the ledger, rendered through the slip
-layout, and pushed to the printer. Nothing depends on which line a value
-happened to land on, so a different receipt layout doesn't break it.
+lines 15–28) with a real parse: the photo goes to whichever vision model you
+have a key for, comes back as structured fields, gets stored in the ledger,
+rendered through the slip layout, and pushed to the printer. Nothing depends on
+which line a value happened to land on, so a different receipt layout doesn't
+break it.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
-import mimetypes
 import shutil
 import tempfile
 from pathlib import Path
 
-from .. import config, ledger, receipt_layout
+from .. import brain, config, ledger, receipt_layout
 from .base import BaseAgent, tool
 
 EXTRACTION_PROMPT = """\
@@ -87,53 +86,16 @@ def _parse_json(text: str) -> dict:
         raise
 
 
-def _shrink(raw: bytes, mime: str) -> tuple[bytes, str]:
-    """Downscale a 12-megapixel phone photo before sending it upstream.
-
-    Pillow is optional: without it the original bytes go up unchanged, which
-    still works, just slower.
-    """
-    try:
-        import io
-
-        from PIL import Image
-    except ImportError:
-        return raw, mime
-    try:
-        image = Image.open(io.BytesIO(raw))
-        image.thumbnail((1600, 1600))
-        if image.mode not in ("RGB", "L"):
-            image = image.convert("RGB")
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=85)
-        return buffer.getvalue(), "image/jpeg"
-    except Exception:
-        return raw, mime
-
-
 class ScanAgent(BaseAgent):
     name = "scan"
     description = ("Reads photos taken on the phone: OCR, structured receipt/invoice "
                    "extraction into the finance ledger, PDF conversion, and printing "
                    "the formatted slip.")
 
-    # ── Gemini vision ─────────────────────────────────────────────
+    # ── vision (Gemini or OpenAI, whichever key you have) ─────────
 
     async def _vision(self, path: Path, prompt: str) -> str:
-        if not config.GEMINI_API_KEY:
-            raise RuntimeError("GEMINI_API_KEY is not configured (Settings ⚙)")
-        from google import genai
-        from google.genai import types
-
-        raw = path.read_bytes()
-        mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-        raw, mime = _shrink(raw, mime)
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-        response = await client.aio.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=[types.Part.from_bytes(data=raw, mime_type=mime), prompt],
-        )
-        return (response.text or "").strip()
+        return await brain.look(path, prompt)
 
     # ── tools ─────────────────────────────────────────────────────
 
