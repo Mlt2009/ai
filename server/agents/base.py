@@ -44,25 +44,42 @@ class BaseAgent:
     description: str = ""
 
     def tool_declarations(self) -> list[dict]:
-        """Gemini-format function declarations, namespaced `agent__tool`."""
+        """Plain JSON-Schema declarations, namespaced `agent__tool`.
+
+        This is the neutral shape; the two brains convert it below, so a new
+        tool is written once and both Gemini and OpenAI can call it.
+        """
         decls = []
         for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
             decl = getattr(method, "_tool_decl", None)
             if decl:
-                params = decl["parameters"]
                 decls.append({
                     "name": f"{self.name}__{decl['name']}",
                     "description": decl["description"],
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            n: {**p, "type": p["type"].upper()}
-                            for n, p in params["properties"].items()
-                        },
-                        "required": params["required"],
-                    },
+                    "parameters": decl["parameters"],
                 })
         return decls
+
+    def gemini_declarations(self) -> list[dict]:
+        """Gemini wants SCREAMING type names."""
+        out = []
+        for decl in self.tool_declarations():
+            params = decl["parameters"]
+            out.append({
+                "name": decl["name"],
+                "description": decl["description"],
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {n: {**p, "type": p["type"].upper()}
+                                   for n, p in params["properties"].items()},
+                    "required": params["required"],
+                },
+            })
+        return out
+
+    def openai_declarations(self) -> list[dict]:
+        """OpenAI wraps each function in a `{"type": "function"}` envelope."""
+        return [{"type": "function", "function": decl} for decl in self.tool_declarations()]
 
     async def call(self, tool_name: str, args: dict) -> Any:
         method = getattr(self, tool_name, None)

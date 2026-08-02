@@ -16,11 +16,12 @@ from pathlib import Path
 import httpx
 import psutil
 import uvicorn
-from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import Body, FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import brain, config, ledger, receipt_layout
+from .agents import council_agent, scan_agent
 from .orchestrator import Orchestrator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -31,10 +32,37 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 app = FastAPI(title="AI Companion")
 atlas = Orchestrator()
 
+# Paths that must stay reachable without a token, or you could never log in.
+OPEN_PATHS = {"/", "/index.html", "/style.css", "/app.js", "/manifest.json",
+              "/sw.js", "/icon.svg", "/api/auth"}
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    """Gate every API call behind ACCESS_TOKEN, once one is set.
+
+    With no token configured the server behaves exactly as before (fine on your
+    own Wi-Fi). Set one before you expose it to the internet.
+    """
+    if config.ACCESS_TOKEN and request.url.path.startswith("/api/") \
+            and request.url.path not in OPEN_PATHS:
+        supplied = (request.headers.get("x-atlas-token")
+                    or request.query_params.get("token", ""))
+        if supplied != config.ACCESS_TOKEN:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
 
 @app.get("/")
 async def index():
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/api/auth")
+async def auth_needed(token: str = ""):
+    """Does this server want a token, and is the one I have correct?"""
+    return {"required": bool(config.ACCESS_TOKEN),
+            "ok": not config.ACCESS_TOKEN or token == config.ACCESS_TOKEN}
 
 
 @app.get("/api/team")
@@ -49,10 +77,75 @@ async def live_stats():
     return {
         "cpu": psutil.cpu_percent(interval=0.1),
         "mem": vm.percent,
-        "gemini": bool(config.GEMINI_API_KEY),
+        "gemini": bool(brain.provider()),
         "home_assistant": bool(config.HA_TOKEN),
         "octoprint": bool(config.OCTOPRINT_API_KEY),
     }
+
+
+@app.post("/api/upload")
+async def upload_photo(photo: UploadFile = File(...)):
+    """Receive a photo straight from the phone camera."""
+    suffix = Path(photo.filename or "shot.jpg").suffix.lower() or ".jpg"
+    if suffix not in {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif"}:
+        return JSONResponse({"error": f"unsupported image type {suffix}"}, status_code=400)
+    image_id = f"{uuid.uuid4().hex[:12]}{suffix}"
+    target = scan_agent.uploads_dir() / image_id
+    target.write_bytes(await photo.read())
+    log.info("photo uploaded: %s (%d KB)", image_id, target.stat().st_size // 1024)
+    return {"image_id": image_id, "kb": round(target.stat().st_size / 1024)}
+
+
+@app.post("/api/scan")
+async def scan_photo(body: dict = Body(default={})):
+    """One-tap pipeline: newest photo → OCR → layout → (optionally) print."""
+    agent = atlas.agents.get("scan")
+    if agent is None:
+        return JSONResponse({"error": "scan agent unavailable"}, status_code=500)
+    if body.get("print"):
+        return await agent.call("scan_and_print", {
+            "image_id": body.get("image_id", ""), "title": body.get("title", ""),
+            "copies": int(body.get("copies") or 1)})
+    result = await agent.call("scan_receipt", {"image_id": body.get("image_id", "")})
+    if isinstance(result, dict) and result.get("receipt_id"):
+        receipt = ledger.get_receipt(result["receipt_id"])
+        result["slip"] = receipt_layout.render(receipt, title=body.get("title", ""))
+    return result
+
+
+@app.get("/api/workspace")
+async def workspace():
+    """Everything the workspace grid renders: agents, companions, money."""
+    from datetime import date
+
+    month_start = date.today().replace(day=1).isoformat()
+    spend = ledger.totals("category", since=month_start)
+    return {
+        "agents": atlas.team_roster(),
+        "companions": [{"name": c["name"], "model": c["model"], "kind": c["kind"]}
+                       for c in council_agent.companions()],
+        "month": {
+            "since": month_start,
+            "total": round(sum(g["total"] or 0 for g in spend), 2),
+            "by_category": spend[:6],
+        },
+        "recent": [{"id": r["id"], "date": r["purchased_on"], "merchant": r["merchant"],
+                    "total": r["total"], "category": r["category"]}
+                   for r in ledger.list_receipts(limit=8)],
+        "shopping": ledger.list_items()[:12],
+        "photos": sorted((p.name for p in scan_agent.uploads_dir().glob("*.*")),
+                         reverse=True)[:6],
+    }
+
+
+@app.post("/api/broadcast")
+async def broadcast(body: dict = Body(...)):
+    """Ask every configured AI companion the same thing, straight from the UI."""
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        return JSONResponse({"error": "prompt is required"}, status_code=400)
+    results = await council_agent.broadcast(prompt)
+    return {"prompt": prompt, "results": results}
 
 
 def _mask(secret: str) -> str:
@@ -63,16 +156,11 @@ async def _service_checks() -> dict:
     """Live reachability tests for every integration (best-effort, fast)."""
 
     async def check_gemini():
-        if not config.GEMINI_API_KEY:
-            return {"on": False, "detail": "no API key"}
+        """The brain — Gemini or OpenAI, whichever key is configured."""
         try:
-            from google import genai
-            client = genai.Client(api_key=config.GEMINI_API_KEY)
-            await asyncio.wait_for(
-                client.aio.models.get(model=config.GEMINI_MODEL), timeout=6)
-            return {"on": True, "detail": f"connected · {config.GEMINI_MODEL}"}
+            return await asyncio.wait_for(brain.check(), timeout=8)
         except Exception as exc:
-            return {"on": False, "detail": f"key set but check failed: {type(exc).__name__}"}
+            return {"on": False, "detail": f"check failed: {type(exc).__name__}"}
 
     async def check_ha():
         if not config.HA_TOKEN:
@@ -106,6 +194,8 @@ async def _service_checks() -> dict:
 
     gemini, ha, octo, cups = await asyncio.gather(
         check_gemini(), check_ha(), check_octoprint(), check_cups())
+    crew = council_agent.companions()
+    names = ", ".join(c["name"] for c in crew)
     return {
         "gemini": gemini,
         "home_assistant": ha,
@@ -114,6 +204,15 @@ async def _service_checks() -> dict:
         "computer": {"on": True,
                      "detail": "shell enabled" if config.ALLOW_SHELL else "safe mode (shell off)"},
         "data": {"on": True, "detail": "key-free live APIs"},
+        "council": {"on": bool(crew),
+                    "detail": f"{len(crew)} companion(s): {names}" if crew
+                              else "no AI companions configured yet"},
+        "files": {"on": True,
+                  "detail": ("read + write" if config.ALLOW_FILE_WRITE else "read only")
+                            + f" · {config.FILE_ROOTS}"},
+        "remote": {"on": bool(config.ACCESS_TOKEN),
+                   "detail": "access token set" if config.ACCESS_TOKEN
+                             else "no token — keep this on your own network"},
     }
 
 
@@ -132,6 +231,20 @@ async def get_settings():
             "WEATHER_LON": config.WEATHER_LON,
             "ELEVENLABS_API_KEY": _mask(env_elevenlabs()),
             "ALLOW_SHELL": config.ALLOW_SHELL,
+            "ANTHROPIC_API_KEY": _mask(config.ANTHROPIC_API_KEY),
+            "ANTHROPIC_MODEL": config.ANTHROPIC_MODEL,
+            "OPENAI_API_KEY": _mask(config.OPENAI_API_KEY),
+            "OPENAI_MODEL": config.OPENAI_MODEL,
+            "OPENROUTER_API_KEY": _mask(config.OPENROUTER_API_KEY),
+            "OPENROUTER_MODEL": config.OPENROUTER_MODEL,
+            "COMPANION_ENDPOINTS": config.COMPANION_ENDPOINTS,
+            "BUSINESS_NAME": config.BUSINESS_NAME,
+            "BUSINESS_PHONE": config.BUSINESS_PHONE,
+            "RECEIPT_WIDTH": config.RECEIPT_WIDTH,
+            "RECEIPT_FOOTER": config.RECEIPT_FOOTER,
+            "FILE_ROOTS": config.FILE_ROOTS,
+            "ALLOW_FILE_WRITE": config.ALLOW_FILE_WRITE,
+            "ACCESS_TOKEN": _mask(config.ACCESS_TOKEN),
         },
         "services": await _service_checks(),
     }
@@ -149,8 +262,9 @@ async def save_settings(updates: dict = Body(...)):
     # Ignore masked placeholders sent back unchanged, and blank secrets.
     cleaned = {k: v for k, v in updates.items()
                if isinstance(v, (str, int, float, bool)) and "••••" not in str(v)}
-    if "ALLOW_SHELL" in cleaned:
-        cleaned["ALLOW_SHELL"] = "true" if str(cleaned["ALLOW_SHELL"]).lower() in ("true", "1") else "false"
+    for flag in ("ALLOW_SHELL", "ALLOW_FILE_WRITE"):
+        if flag in cleaned:
+            cleaned[flag] = "true" if str(cleaned[flag]).lower() in ("true", "1") else "false"
     changed = config.save(cleaned)
     if changed:
         atlas = Orchestrator()
@@ -160,6 +274,9 @@ async def save_settings(updates: dict = Body(...)):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    if config.ACCESS_TOKEN and ws.query_params.get("token", "") != config.ACCESS_TOKEN:
+        await ws.close(code=1008)
+        return
     await ws.accept()
     session_id = str(uuid.uuid4())
     log.info("client connected: %s", session_id)
