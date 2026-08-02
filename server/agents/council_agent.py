@@ -35,7 +35,9 @@ def companions() -> list[dict]:
                     "base_url": "https://api.anthropic.com",
                     "model": config.ANTHROPIC_MODEL, "key": config.ANTHROPIC_API_KEY})
     if config.OPENAI_API_KEY:
-        out.append(_openai_style("chatgpt", "https://api.openai.com/v1",
+        # Honour OPENAI_BASE_URL: if the key belongs to a proxy or an Azure
+        # gateway, the council must not send it to api.openai.com.
+        out.append(_openai_style("chatgpt", config.OPENAI_BASE_URL,
                                  config.OPENAI_MODEL, config.OPENAI_API_KEY))
     if config.GEMINI_API_KEY:
         out.append({"name": "gemini", "kind": "gemini", "base_url": "",

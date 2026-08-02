@@ -202,6 +202,30 @@ class CompanionRegistryTests(unittest.TestCase):
         self.assertEqual(len(claude), 1)
         self.assertEqual(claude[0]["kind"], "anthropic")
 
+    def test_chatgpt_companion_honours_a_custom_base_url(self):
+        """A proxy/Azure key must not be sent to api.openai.com."""
+        os.environ["OPENAI_API_KEY"] = "sk-proxy-scoped"
+        os.environ["OPENAI_BASE_URL"] = "http://my-proxy.local/v1"
+        try:
+            config.reload()
+            chatgpt = [c for c in council_agent.companions() if c["name"] == "chatgpt"][0]
+            self.assertEqual(chatgpt["base_url"], "http://my-proxy.local/v1")
+            self.assertEqual(chatgpt["base_url"], config.OPENAI_BASE_URL)
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("OPENAI_BASE_URL", None)
+            config.reload()
+
+    def test_chatgpt_companion_defaults_to_openai(self):
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        try:
+            config.reload()
+            chatgpt = [c for c in council_agent.companions() if c["name"] == "chatgpt"][0]
+            self.assertEqual(chatgpt["base_url"], "https://api.openai.com/v1")
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+            config.reload()
+
 
 class BrainSelectionTests(unittest.TestCase):
     """One key — either key — has to be enough to run the whole workspace."""
