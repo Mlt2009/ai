@@ -21,6 +21,22 @@
     <button id="reset" title="New conversation">⟳</button>
   </header>
 
+  <nav id="tabs">
+    <button class="tab active" data-view="chat">Chat</button>
+    <button class="tab" data-view="workspace">Workspace</button>
+  </nav>
+
+  <div id="gate" class="settings hidden">
+    <div class="settings-card">
+      <h2>This workspace is locked</h2>
+      <p class="hint">Enter the access token from the server's <code>.env</code>
+        (<code>ACCESS_TOKEN</code>). It's stored on this device only.</p>
+      <div class="svc"><input id="gate-token" placeholder="access token" autocomplete="off"></div>
+      <div class="settings-actions"><button id="gate-unlock">Unlock</button></div>
+      <p id="gate-msg" class="hint"></p>
+    </div>
+  </div>
+
   <div id="settings" class="settings hidden">
     <div class="settings-card">
       <h2>Power up your agents</h2>
@@ -29,6 +45,40 @@
       <div class="svc" data-svc="gemini">
         <div class="svc-head"><span class="dot"></span><strong>Gemini brain</strong><span class="svc-detail"></span></div>
         <input data-key="GEMINI_API_KEY" placeholder="GEMINI_API_KEY — aistudio.google.com/apikey" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="council">
+        <div class="svc-head"><span class="dot"></span><strong>AI companions (broadcast)</strong><span class="svc-detail"></span></div>
+        <input data-key="ANTHROPIC_API_KEY" placeholder="ANTHROPIC_API_KEY — Claude" autocomplete="off">
+        <input data-key="OPENAI_API_KEY" placeholder="OPENAI_API_KEY — ChatGPT" autocomplete="off">
+        <input data-key="OPENROUTER_API_KEY" placeholder="OPENROUTER_API_KEY — everything else" autocomplete="off">
+        <input data-key="COMPANION_ENDPOINTS" placeholder="extra: name|http://host/v1|model|key, comma separated" autocomplete="off">
+        <p class="hint">The last box adds any OpenAI-compatible endpoint — a local
+          Ollama or LM Studio, your own router, a self-hosted agent.</p>
+      </div>
+
+      <div class="svc" data-svc="cups">
+        <div class="svc-head"><span class="dot"></span><strong>Paper printer</strong><span class="svc-detail"></span></div>
+        <input data-key="CUPS_PRINTER" placeholder="Printer name (blank = system default)" autocomplete="off">
+        <input data-key="BUSINESS_NAME" placeholder="Business name printed on the slip" autocomplete="off">
+        <input data-key="BUSINESS_PHONE" placeholder="Phone / line under the heading" autocomplete="off">
+        <input data-key="RECEIPT_WIDTH" placeholder="Slip width in characters (32 = 58mm roll, 40 = 80mm)" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="files">
+        <div class="svc-head"><span class="dot"></span><strong>File control</strong><span class="svc-detail"></span></div>
+        <input data-key="FILE_ROOTS" placeholder="Folders I may touch (* = whole computer)" autocomplete="off">
+        <label class="toggle"><input type="checkbox" data-key="ALLOW_FILE_WRITE"> Allow file changes (write, move, delete)</label>
+      </div>
+
+      <div class="svc" data-svc="computer">
+        <div class="svc-head"><span class="dot"></span><strong>Computer control</strong><span class="svc-detail"></span></div>
+        <label class="toggle"><input type="checkbox" data-key="ALLOW_SHELL"> Allow shell commands (full power — use with care)</label>
+      </div>
+
+      <div class="svc" data-svc="remote">
+        <div class="svc-head"><span class="dot"></span><strong>Remote access</strong><span class="svc-detail"></span></div>
+        <input data-key="ACCESS_TOKEN" placeholder="ACCESS_TOKEN — required before exposing this beyond your Wi-Fi" autocomplete="off">
       </div>
 
       <div class="svc" data-svc="home_assistant">
@@ -41,16 +91,6 @@
         <div class="svc-head"><span class="dot"></span><strong>3D printer (OctoPrint)</strong><span class="svc-detail"></span></div>
         <input data-key="OCTOPRINT_URL" placeholder="OCTOPRINT_URL, e.g. http://octopi.local" autocomplete="off">
         <input data-key="OCTOPRINT_API_KEY" placeholder="OCTOPRINT_API_KEY" autocomplete="off">
-      </div>
-
-      <div class="svc" data-svc="cups">
-        <div class="svc-head"><span class="dot"></span><strong>Paper printer</strong><span class="svc-detail"></span></div>
-        <input data-key="CUPS_PRINTER" placeholder="Printer name (blank = system default)" autocomplete="off">
-      </div>
-
-      <div class="svc" data-svc="computer">
-        <div class="svc-head"><span class="dot"></span><strong>Computer control</strong><span class="svc-detail"></span></div>
-        <label class="toggle"><input type="checkbox" data-key="ALLOW_SHELL"> Allow shell commands (full power — use with care)</label>
       </div>
 
       <div class="svc" data-svc="data">
@@ -74,6 +114,49 @@
 
   <main id="chat"></main>
 
+  <!-- ── Workspace: the whole team on one screen ─────────────────── -->
+  <section id="workspace" class="hidden">
+    <div class="card scan-card">
+      <h3>Scan &amp; print</h3>
+      <p class="hint">Take a photo of a receipt or work order — it's read, filed
+        under expenses, laid out as a slip and printed.</p>
+      <div class="scan-actions">
+        <label class="primary-btn">
+          📷 Take photo
+          <input id="camera" type="file" accept="image/*" capture="environment" hidden>
+        </label>
+        <label class="toggle"><input id="scan-print" type="checkbox" checked> print it too</label>
+      </div>
+      <pre id="slip" class="slip hidden"></pre>
+    </div>
+
+    <div class="card">
+      <h3>This month <span id="ws-total" class="badge">–</span></h3>
+      <div id="ws-spend" class="bars"></div>
+      <div id="ws-recent" class="rows"></div>
+    </div>
+
+    <div class="card">
+      <h3>AI companions <span id="ws-companion-count" class="badge">0</span></h3>
+      <div id="ws-companions" class="grid"></div>
+      <div class="broadcast">
+        <input id="broadcast-input" placeholder="Ask all of them at once…" autocomplete="off">
+        <button id="broadcast-send">Ask all</button>
+      </div>
+      <div id="broadcast-results" class="answers"></div>
+    </div>
+
+    <div class="card">
+      <h3>Agent team <span id="ws-agent-count" class="badge">0</span></h3>
+      <div id="ws-agents" class="grid"></div>
+    </div>
+
+    <div class="card">
+      <h3>Shopping list</h3>
+      <div id="ws-shopping" class="rows"></div>
+    </div>
+  </section>
+
   <footer>
     <button id="mic" class="mic" title="Hold or tap to talk">
       <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor">
@@ -81,6 +164,7 @@
       </svg>
     </button>
     <input id="input" type="text" placeholder="Type or tap the mic…" autocomplete="off">
+    <button id="camera-btn" title="Scan a receipt">📷</button>
     <button id="send" title="Send">➤</button>
   </footer>
 </div>

@@ -15,18 +15,29 @@ import logging
 from typing import AsyncIterator
 
 from . import config
-from .agents import ComputerAgent, DataAgent, HomeAgent, PrinterAgent
+from .agents import (ComputerAgent, CouncilAgent, DataAgent, FilesAgent, FinanceAgent,
+                     HomeAgent, PrinterAgent, ScanAgent, ShoppingAgent)
 from .agents.base import BaseAgent
 
 log = logging.getLogger("atlas")
 
 SYSTEM_PROMPT = """\
-You are Atlas, a warm, capable real-time voice AI companion. You lead a team
-of specialist subagents and use their tools to act in the real world:
+You are Atlas, a warm, capable real-time voice AI companion and the operator of
+a professional shopping-and-finance workspace. You lead a team of specialist
+subagents and use their tools to act in the real world:
 
-- home: smart-home control via Home Assistant (lights, climate, scenes, sensors)
-- printer: OctoPrint 3D printer control and paper printing via CUPS
+- scan: photos taken on the phone — OCR, reading a receipt or invoice into
+  structured fields, converting to PDF, and printing the formatted slip
+- finance: expenses, spend summaries, budgets, tax totals, CSV export, printed
+  expense reports
+- shopping: the shopping list, live price and deal checks, spend so far
+- council: every other AI companion at once (Claude, ChatGPT, Gemini,
+  OpenRouter, any endpoint the user added) — broadcast, ask one, or merge
+- files: the files on this computer — browse, search, read, write, move, copy,
+  delete, zip, open
 - computer: this computer — stats, processes, volume, open apps/sites, shell
+- printer: OctoPrint 3D printer control and paper printing via CUPS
+- home: smart-home control via Home Assistant (lights, climate, scenes, sensors)
 - data: real-time data — weather, time, news headlines, crypto prices
 
 Rules:
@@ -34,16 +45,23 @@ Rules:
   No markdown, no bullet lists, no emoji.
 - When the user asks for something an agent can do, call the tool rather than
   guessing. Chain multiple tool calls when needed.
+- "Scan this" or "take a picture of this receipt" means the newest photo: call
+  scan__scan_and_print when they want it printed, scan__scan_receipt otherwise.
+- When the user asks what the other AIs think, or wants a second opinion, use
+  council__ask_all or council__consensus.
 - If a tool returns an error (e.g. a service isn't configured), tell the user
   plainly what's missing and how to fix it.
+- Deleting files and overwriting them cannot be undone. Confirm with the user
+  before a destructive file action unless they were explicit about it.
 - Be proactive: after answering, offer a brief useful follow-up when natural.
 """
 
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 8
 
 
 def build_team() -> dict[str, BaseAgent]:
-    agents = (HomeAgent(), PrinterAgent(), ComputerAgent(), DataAgent())
+    agents = (ScanAgent(), FinanceAgent(), ShoppingAgent(), CouncilAgent(), FilesAgent(),
+              ComputerAgent(), PrinterAgent(), HomeAgent(), DataAgent())
     return {a.name: a for a in agents}
 
 
