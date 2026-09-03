@@ -1,12 +1,22 @@
-"""Atlas — the orchestrator that runs the subagent team.
+"""Mehltani — the orchestrator that runs the subagent team.
 
-One Gemini-powered brain sits on top; every specialist subagent registers
-its tools with it. Gemini decides which agent/tool to call (function
-calling), the orchestrator executes it, feeds the result back, and loops
-until Gemini produces a final spoken answer.
+One brain (Gemini or OpenAI) sits on top; every specialist subagent registers
+its tools with it. The model decides which agent/tool to call (function
+calling), the orchestrator executes it, feeds the result back, and loops until
+the model produces a final spoken answer.
 
-Uses the modern `google-genai` SDK — the same one the A.D.A. desktop
-frontend uses for the Gemini Live API, so both frontends share one team.
+Two things make this more than a fixed tool router:
+
+  * the system prompt is rebuilt at the start of every new session from
+    identity.py + the live style_memory profile, so a session started after a
+    week of verdicts talks like it knows you, without a restart.
+  * agents Mehltani writes for himself (server/agents/generated/, via
+    factory.py) are loaded alongside the hand-written team. A newly created
+    subagent is callable starting with the next session — reconnect, or send
+    a `reset`, to pick up the new tool list in this same conversation.
+
+Uses the modern `google-genai` SDK — the same one the A.D.A. desktop frontend
+uses for the Gemini Live API, so both frontends share one team.
 """
 from __future__ import annotations
 
@@ -14,55 +24,33 @@ import json
 import logging
 from typing import AsyncIterator
 
-from . import brain, config
-from .agents import (ComputerAgent, CouncilAgent, DataAgent, FilesAgent, FinanceAgent,
-                     HomeAgent, PrinterAgent, ScanAgent, ShoppingAgent)
+from . import brain, config, factory, identity, style_memory
+from .agents import (ComputerAgent, CouncilAgent, DataAgent, EvolutionAgent,
+                     FilesAgent, FinanceAgent, GlamAgent, GuardianAgent,
+                     HomeAgent, PhotoshootAgent, PrinterAgent, ScanAgent,
+                     ShoppingAgent, StyleAgent, TrendAgent, WhatsAppAgent,
+                     WorkspaceAgent)
 from .agents.base import BaseAgent
 
-log = logging.getLogger("atlas")
-
-SYSTEM_PROMPT = """\
-You are Atlas, a warm, capable real-time voice AI companion and the operator of
-a professional shopping-and-finance workspace. You lead a team of specialist
-subagents and use their tools to act in the real world:
-
-- scan: photos taken on the phone — OCR, reading a receipt or invoice into
-  structured fields, converting to PDF, and printing the formatted slip
-- finance: expenses, spend summaries, budgets, tax totals, CSV export, printed
-  expense reports
-- shopping: the shopping list, live price and deal checks, spend so far
-- council: every other AI companion at once (Claude, ChatGPT, Gemini,
-  OpenRouter, any endpoint the user added) — broadcast, ask one, or merge
-- files: the files on this computer — browse, search, read, write, move, copy,
-  delete, zip, open
-- computer: this computer — stats, processes, volume, open apps/sites, shell
-- printer: OctoPrint 3D printer control and paper printing via CUPS
-- home: smart-home control via Home Assistant (lights, climate, scenes, sensors)
-- data: real-time data — weather, time, news headlines, crypto prices
-
-Rules:
-- Your replies are spoken aloud, so keep them short, natural and conversational.
-  No markdown, no bullet lists, no emoji.
-- When the user asks for something an agent can do, call the tool rather than
-  guessing. Chain multiple tool calls when needed.
-- "Scan this" or "take a picture of this receipt" means the newest photo: call
-  scan__scan_and_print when they want it printed, scan__scan_receipt otherwise.
-- When the user asks what the other AIs think, or wants a second opinion, use
-  council__ask_all or council__consensus.
-- If a tool returns an error (e.g. a service isn't configured), tell the user
-  plainly what's missing and how to fix it.
-- Deleting files and overwriting them cannot be undone. Confirm with the user
-  before a destructive file action unless they were explicit about it.
-- Be proactive: after answering, offer a brief useful follow-up when natural.
-"""
+log = logging.getLogger("mehltani")
 
 MAX_TOOL_ROUNDS = 8
 
+# Calling either of these means the generated-agent set on disk just changed —
+# refresh self.agents so a create-then-call inside the same turn can resolve.
+_AGENT_ROSTER_TOOLS = {"evolution__create_subagent", "evolution__remove_subagent"}
+
 
 def build_team() -> dict[str, BaseAgent]:
-    agents = (ScanAgent(), FinanceAgent(), ShoppingAgent(), CouncilAgent(), FilesAgent(),
-              ComputerAgent(), PrinterAgent(), HomeAgent(), DataAgent())
-    return {a.name: a for a in agents}
+    agents: list[BaseAgent] = [
+        StyleAgent(), PhotoshootAgent(), GlamAgent(), TrendAgent(), WhatsAppAgent(),
+        WorkspaceAgent(), ScanAgent(), FinanceAgent(), ShoppingAgent(), CouncilAgent(),
+        FilesAgent(), ComputerAgent(), PrinterAgent(), HomeAgent(), DataAgent(),
+        GuardianAgent(), EvolutionAgent(),
+    ]
+    team = {a.name: a for a in agents}
+    team.update(factory.load_all())  # subagents Mehltani wrote for himself
+    return team
 
 
 async def execute_tool(agents: dict[str, BaseAgent], name: str, args: dict) -> dict:
@@ -95,6 +83,28 @@ class Orchestrator:
     def tool_count(self) -> int:
         return sum(len(a.tool_declarations()) for a in self.agents.values())
 
+    def system_prompt(self) -> str:
+        """Fresh every time it's called — the taste profile keeps moving."""
+        return identity.system_prompt(style_memory.summary())
+
+    def reload_generated_agents(self) -> None:
+        """Pick up subagents Mehltani has just written for himself.
+
+        Rebuilds tool declarations for future chat sessions. A session already
+        in flight keeps the tool list it started with — the model can't call a
+        tool it was never told about — but self.agents is updated immediately,
+        so routing is correct the moment a new session (or `reset`) picks up
+        the refreshed declarations.
+        """
+        hand_written = {n: a for n, a in self.agents.items()
+                        if not a.__class__.__module__.startswith(
+                            "server.agents.generated")}
+        self.agents = {**hand_written, **factory.load_all()}
+        if self.provider == "gemini" and self._client is not None:
+            self._init_gemini()
+        elif self.provider == "openai" and self._client is not None:
+            self._init_openai()
+
     # ── Gemini setup ──────────────────────────────────────────────
 
     def _init_gemini(self) -> None:
@@ -105,12 +115,17 @@ class Orchestrator:
         declarations = []
         for agent in self.agents.values():
             declarations.extend(agent.gemini_declarations())
-        self._chat_config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            tools=[types.Tool(function_declarations=declarations)],
-        )
+        self._declarations = declarations
         log.info("Gemini ready with %d tools from %d subagents",
                  len(declarations), len(self.agents))
+
+    def _gemini_config(self):
+        from google.genai import types
+
+        return types.GenerateContentConfig(
+            system_instruction=self.system_prompt(),
+            tools=[types.Tool(function_declarations=self._declarations)],
+        )
 
     # ── OpenAI setup ──────────────────────────────────────────────
 
@@ -127,8 +142,7 @@ class Orchestrator:
         chat = self._sessions.get(session_id)
         if chat is None:
             chat = self._client.aio.chats.create(
-                model=config.GEMINI_MODEL, config=self._chat_config
-            )
+                model=config.GEMINI_MODEL, config=self._gemini_config())
             self._sessions[session_id] = chat
         return chat
 
@@ -165,6 +179,8 @@ class Orchestrator:
                 args = dict(fc.args or {})
                 yield {"type": "tool", "name": fc.name, "args": args}
                 result = await execute_tool(self.agents, fc.name, args)
+                if fc.name in _AGENT_ROSTER_TOOLS:
+                    self.reload_generated_agents()
                 yield {"type": "tool_result", "name": fc.name,
                        "result": json.loads(json.dumps(result, default=str))}
                 fn_parts.append(types.Part.from_function_response(
@@ -180,7 +196,7 @@ class Orchestrator:
         """Same loop, OpenAI's wire format. We keep the history ourselves."""
         history = self._sessions.get(session_id)
         if not isinstance(history, list):
-            history = [{"role": "system", "content": SYSTEM_PROMPT}]
+            history = [{"role": "system", "content": self.system_prompt()}]
             self._sessions[session_id] = history
         history.append({"role": "user", "content": text})
 
@@ -199,6 +215,8 @@ class Orchestrator:
             for call in calls:
                 yield {"type": "tool", "name": call["name"], "args": call["args"]}
                 result = await execute_tool(self.agents, call["name"], call["args"])
+                if call["name"] in _AGENT_ROSTER_TOOLS:
+                    self.reload_generated_agents()
                 yield {"type": "tool_result", "name": call["name"],
                        "result": json.loads(json.dumps(result, default=str))}
                 history.append({"role": "tool", "tool_call_id": call["id"],
@@ -214,6 +232,7 @@ class Orchestrator:
     def team_roster(self) -> list[dict]:
         return [
             {"name": a.name, "description": a.description,
-             "tools": [t["name"].split("__", 1)[1] for t in a.tool_declarations()]}
+             "tools": [t["name"].split("__", 1)[1] for t in a.tool_declarations()],
+             "generated": a.__class__.__module__.startswith("server.agents.generated")}
             for a in self.agents.values()
         ]

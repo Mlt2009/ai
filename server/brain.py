@@ -1,6 +1,6 @@
 """The brain — whichever model you actually have a key for.
 
-Atlas runs on Gemini or on OpenAI. Everything that needs a model goes through
+Mehltani runs on Gemini or on OpenAI. Everything that needs a model goes through
 this module, so one key is enough to get the whole workspace working: the
 orchestrator's tool calling, reading receipts from photos, merging the
 council's answers, and checking live prices.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import uuid
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,10 @@ TIMEOUT = 120.0
 
 class NoBrain(RuntimeError):
     """Raised when nothing is configured — the message is shown to the user."""
+
+
+class NoImageModel(RuntimeError):
+    """Raised when image generation is asked for but nothing supports it."""
 
 
 def provider() -> str:
@@ -179,6 +184,104 @@ def _responses_text(body: dict) -> str:
             if isinstance(part, dict) and isinstance(part.get("text"), str):
                 chunks.append(part["text"])
     return "\n".join(chunks).strip()
+
+
+# ── image generation ─────────────────────────────────────────────
+
+async def imagine(prompt: str, reference: Path | None = None, count: int = 1,
+                  out_dir: Path | None = None) -> list[Path]:
+    """Generate image(s), optionally using a reference photo for likeness/style.
+
+    Tries whichever provider is actually keyed — Gemini's image model first
+    (it accepts an image + text prompt in one call, which is what "restyle this
+    photo" needs), then OpenAI's. Raises NoImageModel with a plain explanation
+    when neither is available, so callers can degrade to a text-only plan
+    instead of the request silently doing nothing.
+    """
+    if out_dir is None:
+        out_dir = Path(config.DATA_DIR) / "uploads"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if config.GEMINI_API_KEY:
+        return await _imagine_gemini(prompt, reference, count, out_dir)
+    if config.OPENAI_API_KEY:
+        return await _imagine_openai(prompt, reference, count, out_dir)
+    raise NoImageModel(
+        "no image-generation model is configured — add a GEMINI_API_KEY (Gemini "
+        "image model) or OPENAI_API_KEY (gpt-image-1) in Settings")
+
+
+async def _imagine_gemini(prompt: str, reference, count: int, out_dir: Path) -> list[Path]:
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    contents: list = [prompt]
+    if reference is not None:
+        raw, mime = shrink(reference.read_bytes(),
+                           mimetypes.guess_type(reference.name)[0] or "image/jpeg")
+        contents = [types.Part.from_bytes(data=raw, mime_type=mime), prompt]
+
+    saved: list[Path] = []
+    for _ in range(max(1, count)):
+        response = await client.aio.models.generate_content(
+            model=config.GEMINI_IMAGE_MODEL, contents=contents)
+        parts = (response.candidates[0].content.parts
+                 if response.candidates and response.candidates[0].content else [])
+        for part in parts:
+            blob = getattr(part, "inline_data", None)
+            if blob and getattr(blob, "data", None):
+                path = out_dir / f"render_{uuid.uuid4().hex[:10]}.png"
+                path.write_bytes(blob.data)
+                saved.append(path)
+                break
+    if not saved:
+        raise NoImageModel(
+            f"{config.GEMINI_IMAGE_MODEL} returned no image data — the model may "
+            "not support image output on this account, or the prompt was refused")
+    return saved
+
+
+async def _imagine_openai(prompt: str, reference, count: int, out_dir: Path) -> list[Path]:
+    import base64
+
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        if reference is not None:
+            raw, mime = shrink(reference.read_bytes(),
+                               mimetypes.guess_type(reference.name)[0] or "image/jpeg")
+            response = await client.post(
+                f"{config.OPENAI_BASE_URL}/images/edits", headers={
+                    "Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+                data={"model": config.OPENAI_IMAGE_MODEL, "prompt": prompt,
+                      "n": str(max(1, min(count, 4)))},
+                files={"image": ("reference.jpg", raw, mime)})
+        else:
+            response = await client.post(
+                f"{config.OPENAI_BASE_URL}/images/generations",
+                headers=_openai_headers(),
+                json={"model": config.OPENAI_IMAGE_MODEL, "prompt": prompt,
+                      "n": max(1, min(count, 4))})
+    if response.status_code >= 400:
+        raise NoImageModel(f"{config.OPENAI_IMAGE_MODEL} request failed "
+                           f"({response.status_code}): {response.text[:200]}")
+    saved: list[Path] = []
+    for item in response.json().get("data", []):
+        b64 = item.get("b64_json")
+        if not b64 and item.get("url"):
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                fetched = await client.get(item["url"])
+                fetched.raise_for_status()
+                data = fetched.content
+        elif b64:
+            data = base64.b64decode(b64)
+        else:
+            continue
+        path = out_dir / f"render_{uuid.uuid4().hex[:10]}.png"
+        path.write_bytes(data)
+        saved.append(path)
+    if not saved:
+        raise NoImageModel(f"{config.OPENAI_IMAGE_MODEL} returned no image data")
+    return saved
 
 
 # ── tool-calling chat (the orchestrator's loop) ───────────────────

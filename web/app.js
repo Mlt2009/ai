@@ -1,7 +1,9 @@
-/* Atlas web client — real-time voice chat over WebSocket, plus the workspace
-   grid (agents, AI companions, money, shopping) and one-tap receipt scanning.
-   Speech-to-text and text-to-speech run in the browser (Web Speech API),
-   so the phone does the talking and the server does the thinking. */
+/* Mehltani web client — real-time voice chat over WebSocket, the workspace
+   grid (agents, AI companions, money, shopping), the style/taste dashboard,
+   the security panel (WebAuthn fingerprint enrolment and confirmation), and
+   one-tap receipt scanning. Speech-to-text and text-to-speech run in the
+   browser (Web Speech API), so the phone does the talking and the server
+   does the thinking. */
 
 const chat = document.getElementById("chat");
 const input = document.getElementById("input");
@@ -16,12 +18,12 @@ let listening = false;
 let voiceMode = false; // after a voice turn, auto-listen again for hands-free flow
 
 // ── Access token (only used when the server sets ACCESS_TOKEN) ─────
-const TOKEN_KEY = "atlas_token";
-let token = localStorage.getItem(TOKEN_KEY) || "";
+const TOKEN_KEY = "mehltani_token";
+let token = localStorage.getItem(TOKEN_KEY) || localStorage.getItem("atlas_token") || "";
 
 function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (token) headers["X-Atlas-Token"] = token;
+  if (token) headers["X-Mehltani-Token"] = token;
   return fetch(path, { ...options, headers });
 }
 
@@ -171,17 +173,21 @@ micBtn.onclick = () => {
   else startListening();
 };
 
-// ── Views: chat ⇄ workspace ───────────────────────────────────────
+// ── Views: chat ⇄ workspace ⇄ style ⇄ security ─────────────────────
 let currentView = "chat";
 const workspaceEl = document.getElementById("workspace");
+const styleEl = document.getElementById("style");
+const securityEl = document.getElementById("security");
+const VIEWS = { chat, workspace: workspaceEl, style: styleEl, security: securityEl };
 
 for (const tab of document.querySelectorAll(".tab")) {
   tab.onclick = () => {
     currentView = tab.dataset.view;
     for (const other of document.querySelectorAll(".tab")) other.classList.toggle("active", other === tab);
-    chat.classList.toggle("hidden", currentView !== "chat");
-    workspaceEl.classList.toggle("hidden", currentView !== "workspace");
+    for (const [name, node] of Object.entries(VIEWS)) node.classList.toggle("hidden", currentView !== name);
     if (currentView === "workspace") loadWorkspace();
+    if (currentView === "style") loadStyle();
+    if (currentView === "security") loadSecurity();
   };
 }
 
@@ -200,7 +206,7 @@ async function loadWorkspace() {
   let data;
   try { data = await apiJson("/api/workspace"); } catch { return; }
 
-  // Agents — one cell each; tapping one asks Atlas to use it.
+  // Agents — one cell each; tapping one asks Mehltani to use it.
   const agents = document.getElementById("ws-agents");
   agents.innerHTML = "";
   document.getElementById("ws-agent-count").textContent = data.agents.length;
@@ -439,6 +445,277 @@ document.getElementById("settings-close").onclick = () => settingsEl.classList.a
 document.getElementById("settings-save").onclick = saveSettings;
 settingsEl.addEventListener("click", (e) => { if (e.target === settingsEl) settingsEl.classList.add("hidden"); });
 
+// ── Style: taste profile, scouting queue, lookbook ─────────────────
+async function loadStyle() {
+  let data;
+  try { data = await apiJson("/api/style"); } catch { return; }
+
+  document.getElementById("style-summary").textContent = data.summary || "Nothing learned yet.";
+  const stats = data.stats || {};
+  document.getElementById("style-stat").textContent = `${stats.verdicts || 0} verdicts`;
+
+  const attrs = document.getElementById("style-attributes");
+  attrs.innerHTML = "";
+  const peak = Math.max(...(data.attributes || []).map((a) => Math.abs(a.score)), 1);
+  for (const a of (data.attributes || []).slice(0, 20)) {
+    const row = el("div", "bar-row");
+    row.appendChild(el("span", "bar-label", a.attribute));
+    const track = el("div", "bar-track");
+    const fill = el("div", "bar-fill" + (a.score < 0 ? " neg" : ""));
+    fill.style.width = `${Math.round((Math.abs(a.score) / peak) * 100)}%`;
+    track.appendChild(fill);
+    row.appendChild(track);
+    row.appendChild(el("span", "bar-value", `${a.score > 0 ? "+" : ""}${a.score}`));
+    attrs.appendChild(row);
+  }
+  if (!(data.attributes || []).length) attrs.appendChild(el("p", "hint", "Record a verdict on a look and it shows up here."));
+
+  const looks = document.getElementById("style-looks");
+  looks.innerHTML = "";
+  for (const look of data.looks || []) {
+    const row = el("div", "row");
+    row.appendChild(el("span", "row-main", look.title));
+    row.appendChild(el("span", "row-sub", look.status));
+    looks.appendChild(row);
+  }
+  if (!(data.looks || []).length) looks.appendChild(el("p", "hint", "No saved looks yet."));
+
+  let queue;
+  try { queue = await apiJson("/api/style/scouted?state=new"); } catch { queue = { items: [] }; }
+  const queueEl = document.getElementById("style-queue");
+  queueEl.innerHTML = "";
+  document.getElementById("style-queue-count").textContent = queue.count || 0;
+  for (const item of queue.items || []) {
+    const cell = el("button", "cell live");
+    cell.appendChild(el("span", "cell-name", item.title));
+    cell.appendChild(el("span", "cell-sub", item.price ? money(item.price) : "price on request"));
+    cell.onclick = () => {
+      document.querySelector('.tab[data-view="chat"]').click();
+      input.value = `About scouted item #${item.id} (${item.title}): `;
+      input.focus();
+    };
+    queueEl.appendChild(cell);
+  }
+  if (!(queue.items || []).length) queueEl.appendChild(el("p", "hint", "Nothing waiting on a verdict — ask me to scout something."));
+}
+
+// ── Security: posture, threats, audit, WebAuthn fingerprint ────────
+//
+// Two independent ceremonies live here — enrol and confirm — both driven by
+// the browser's own navigator.credentials API. No amount of talking to
+// Mehltani in chat can trigger or satisfy either one; that's what makes the
+// gate real. See guardian.py's module docstring for the full reasoning.
+
+function base64urlToBuffer(base64url) {
+  const padded = base64url.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((base64url.length + 3) % 4);
+  const raw = atob(padded);
+  const buffer = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buffer[i] = raw.charCodeAt(i);
+  return buffer.buffer;
+}
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeCreationOptions(options) {
+  return {
+    ...options,
+    challenge: base64urlToBuffer(options.challenge),
+    user: { ...options.user, id: base64urlToBuffer(options.user.id) },
+    excludeCredentials: (options.excludeCredentials || []).map((c) => ({ ...c, id: base64urlToBuffer(c.id) })),
+  };
+}
+
+function decodeRequestOptions(options) {
+  return {
+    ...options,
+    challenge: base64urlToBuffer(options.challenge),
+    allowCredentials: (options.allowCredentials || []).map((c) => ({ ...c, id: base64urlToBuffer(c.id) })),
+  };
+}
+
+function encodeAttestation(credential) {
+  return {
+    id: credential.id,
+    rawId: bufferToBase64url(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+    response: {
+      clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+      attestationObject: bufferToBase64url(credential.response.attestationObject),
+    },
+  };
+}
+
+function encodeAssertion(credential) {
+  const response = {
+    clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+    authenticatorData: bufferToBase64url(credential.response.authenticatorData),
+    signature: bufferToBase64url(credential.response.signature),
+  };
+  if (credential.response.userHandle) response.userHandle = bufferToBase64url(credential.response.userHandle);
+  return { id: credential.id, rawId: bufferToBase64url(credential.rawId), type: credential.type, response };
+}
+
+let presenceToken = "";
+let presenceExpiresAt = 0;
+
+async function enrolFingerprint() {
+  const msg = document.getElementById("sec-enroll-msg");
+  if (!("credentials" in navigator)) { msg.textContent = "This browser doesn't support WebAuthn — use Chrome, Safari or Edge."; return; }
+  const label = document.getElementById("sec-device-label").value.trim() || "my device";
+
+  // Adding a device beyond the first one needs confirmation from one already
+  // enrolled — otherwise anyone reaching this page could plant a fingerprint
+  // backdoor. Get that confirmation first so the new device only has to be
+  // touched once. The very first-ever enrolment skips this — nothing exists
+  // yet to confirm it with.
+  const existing = await apiJson("/api/guardian/biometrics").catch(() => ({ enrolled: [] }));
+  if ((existing.enrolled || []).length > 0 && !(presenceToken && Date.now() < presenceExpiresAt)) {
+    msg.textContent = "Adding another device needs confirmation from one you already enrolled first.";
+    const token = await confirmFingerprint("credential_add");
+    if (!token) { msg.textContent = "Could not confirm — enrolment cancelled."; return; }
+  }
+
+  msg.textContent = "follow the prompt — Touch ID / Face ID / Windows Hello…";
+  try {
+    const begin = await apiJson("/api/guardian/register/begin", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label }),
+    });
+    if (begin.error) { msg.textContent = begin.error; return; }
+    const publicKey = decodeCreationOptions(begin.options);
+    const credential = await navigator.credentials.create({ publicKey });
+    const result = await apiJson("/api/guardian/register/finish", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        state: begin.state, credential: encodeAttestation(credential),
+        presence_token: presenceToken,
+      }),
+    });
+    if (result.error) { msg.textContent = result.error; return; }
+    msg.textContent = `Enrolled "${result.label}" — ${result.total_enrolled} device(s) now protect Mehltani.`;
+    document.getElementById("sec-device-label").value = "";
+    loadSecurity();
+  } catch (err) {
+    msg.textContent = err.name === "NotAllowedError" ? "Cancelled or timed out." : `Failed: ${err.message}`;
+  }
+}
+
+async function confirmFingerprint(op) {
+  const msg = document.getElementById("sec-confirm-msg");
+  if (!("credentials" in navigator)) { msg.textContent = "This browser doesn't support WebAuthn."; return null; }
+  msg.textContent = "follow the prompt…";
+  try {
+    const begin = await apiJson("/api/guardian/verify/begin", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: op || "" }),
+    });
+    if (begin.error) { msg.textContent = begin.error; return null; }
+    const publicKey = decodeRequestOptions(begin.options);
+    const credential = await navigator.credentials.get({ publicKey });
+    const result = await apiJson("/api/guardian/verify/finish", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: begin.state, op: op || "", credential: encodeAssertion(credential) }),
+    });
+    if (result.error) { msg.textContent = result.error; return null; }
+    presenceToken = result.presence_token;
+    presenceExpiresAt = Date.now() + result.expires_in * 1000;
+    msg.textContent = `Confirmed with "${result.device}" — good for ${Math.round(result.expires_in / 60)} minutes.`;
+    return presenceToken;
+  } catch (err) {
+    msg.textContent = err.name === "NotAllowedError" ? "Cancelled or timed out." : `Failed: ${err.message}`;
+    return null;
+  }
+}
+
+document.getElementById("sec-enroll").onclick = enrolFingerprint;
+document.getElementById("sec-confirm").onclick = () => confirmFingerprint("");
+
+document.getElementById("sec-scan").onclick = async () => {
+  const posture = document.getElementById("sec-posture");
+  posture.textContent = "scanning…";
+  try {
+    const result = await apiJson("/api/guardian/scan", { method: "POST" });
+    posture.textContent = result.posture;
+    posture.className = "badge " + (result.posture === "ok" ? "ok" : result.posture === "warn" ? "warn" : "bad");
+    document.getElementById("sec-summary").textContent =
+      `Integrity: ${typeof result.integrity === "string" ? result.integrity : result.integrity.length + " issue(s)"}. ` +
+      `Exposure: ${typeof result.exposure === "string" ? result.exposure : result.exposure.length + " issue(s)"}.`;
+    loadSecurity();
+  } catch {
+    posture.textContent = "scan failed";
+  }
+};
+
+async function loadSecurity() {
+  let status;
+  try { status = await apiJson("/api/guardian/status"); } catch { return; }
+  const posture = document.getElementById("sec-posture");
+  posture.textContent = status.lockdown.on ? "LOCKED DOWN" : status.open_threats ? "attention" : "ok";
+  posture.className = "badge " + (status.lockdown.on ? "bad" : status.open_threats ? "warn" : "ok");
+  document.getElementById("sec-summary").textContent = status.lockdown.on
+    ? `In lockdown: ${status.lockdown.reason}. Confirm your fingerprint to clear it.`
+    : (status.gate_on
+        ? `Fingerprint gate is on · ${status.enrolled_devices} device(s) enrolled · ${status.open_threats} open threat(s).`
+        : "Fingerprint gate is off — protected actions run without confirmation.");
+
+  const devicesData = await apiJson("/api/guardian/biometrics").catch(() => ({ enrolled: [] }));
+  const devices = document.getElementById("sec-devices");
+  devices.innerHTML = "";
+  document.getElementById("sec-device-count").textContent = (devicesData.enrolled || []).length;
+  for (const device of devicesData.enrolled || []) {
+    const row = el("div", "row");
+    row.appendChild(el("span", "row-main", device.label));
+    row.appendChild(el("span", "row-sub", `enrolled ${device.created_at}`));
+    const remove = el("button", "ghost", "remove");
+    remove.onclick = async () => {
+      await api(`/api/guardian/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
+      loadSecurity();
+    };
+    row.appendChild(remove);
+    devices.appendChild(row);
+  }
+  if (!(devicesData.enrolled || []).length) devices.appendChild(el("p", "hint", "No fingerprint enrolled yet."));
+
+  const threats = await apiJson("/api/guardian/threats?unresolved_only=true").catch(() => ({ threats: [] }));
+  const threatsEl = document.getElementById("sec-threats");
+  threatsEl.innerHTML = "";
+  for (const t of threats.threats || []) {
+    const row = el("div", "row");
+    row.appendChild(el("span", "row-main", `[${t.severity}] ${t.kind}`));
+    row.appendChild(el("span", "row-sub", t.summary));
+    threatsEl.appendChild(row);
+  }
+  if (!(threats.threats || []).length) threatsEl.appendChild(el("p", "hint", "Nothing flagged."));
+
+  const audit = await apiJson("/api/guardian/audit?limit=15").catch(() => ({ entries: [] }));
+  const auditEl = document.getElementById("sec-audit");
+  auditEl.innerHTML = "";
+  for (const a of audit.entries || []) {
+    const row = el("div", "row");
+    row.appendChild(el("span", "row-main", `${a.allowed ? "✓" : "✗"} ${a.op}`));
+    row.appendChild(el("span", "row-sub", a.reason || a.at));
+    auditEl.appendChild(row);
+  }
+  if (!(audit.entries || []).length) auditEl.appendChild(el("p", "hint", "No protected actions attempted yet."));
+}
+
+// If the model asks for a fingerprint mid-conversation, a fresh presence
+// token gets appended to the next thing the user says, so it reaches the
+// tool call as a normal piece of context rather than a wire-protocol change.
+const originalSendText = sendText;
+sendText = function (text) {
+  text = text.trim();
+  if (!text) return;
+  if (presenceToken && Date.now() < presenceExpiresAt) {
+    text += ` (presence_token: ${presenceToken})`;
+  }
+  originalSendText(text);
+};
+
 // First run: unlock if needed, then open settings if the brain is off.
 fetch(`/api/auth?token=${encodeURIComponent(token)}`)
   .then((r) => r.json())
@@ -452,4 +729,4 @@ fetch(`/api/auth?token=${encodeURIComponent(token)}`)
 // ── PWA ───────────────────────────────────────────────────────────
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
 
-addMsg("bot", "Hey, I'm Atlas — your shopping and finance companion. Tap the camera to scan a receipt, hit Workspace to see the whole team, or just talk to me. I run your printers, your files, this computer, and every other AI you've plugged in.");
+addMsg("bot", "Hey, I'm Mehltani — your creative director for fashion, hair, makeup and styling. Tap the camera to scan a receipt, hit Style to see your taste profile, Workspace for the whole team, or just talk to me. I scout the web, run your inbox, message your WhatsApp, and rewrite my own code when I need a new skill.");
