@@ -252,6 +252,13 @@ def _run_tests(sandbox: Path) -> dict:
     env = dict(os.environ)
     env["DATA_DIR"] = str(sandbox / ".verify-data")
     env["PYTHONPATH"] = str(sandbox)
+    # The suite this runs includes tests that themselves call evolution.verify()
+    # (see tests/test_mehltani.py). Without this flag, that call would run the
+    # *entire* suite again in a fresh sandbox — including those same tests —
+    # recursing without a base case until the machine runs out of processes or
+    # disk. Tests that call verify() check this flag and skip themselves when
+    # they are already running inside someone else's sandboxed verification.
+    env["MEHLTANI_SANDBOXED_VERIFY"] = "1"
     # Never let a sandboxed test reach the network or the real .env.
     env.pop("GEMINI_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
