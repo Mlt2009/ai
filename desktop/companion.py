@@ -1,6 +1,7 @@
 # --- Core Imports ---
 # A.D.A. desktop frontend — real-time voice/vision via the Gemini Live API,
-# extended with the shared Atlas subagent team (home, printer, computer, data).
+# extended with the shared Mehltani subagent team (style, photoshoot, glam,
+# trend, whatsapp, workspace, home, printer, computer, data, and more).
 import asyncio
 import base64
 import io
@@ -262,7 +263,7 @@ class AI_Core(QObject):
             }
         }
         
-        # --- Atlas subagent team: home, printer, computer, data ---
+        # --- Mehltani subagent team: full roster, see server/orchestrator.py ---
         self.agents = build_team()
         team_declarations = []
         for agent in self.agents.values():

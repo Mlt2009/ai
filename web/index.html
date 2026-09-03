@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#0b0e14">
-<title>Atlas — AI Companion</title>
+<title>Mehltani</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/style.css">
 <link rel="apple-touch-icon" href="/icon.svg">
@@ -14,7 +14,7 @@
   <header>
     <div class="orb" id="orb"></div>
     <div>
-      <h1>Atlas</h1>
+      <h1>Mehltani</h1>
       <div id="status" class="status">connecting…</div>
     </div>
     <button id="settings-btn" title="Settings">⚙</button>
@@ -24,6 +24,8 @@
   <nav id="tabs">
     <button class="tab active" data-view="chat">Chat</button>
     <button class="tab" data-view="workspace">Workspace</button>
+    <button class="tab" data-view="style">Style</button>
+    <button class="tab" data-view="security">Security</button>
   </nav>
 
   <div id="gate" class="settings hidden">
@@ -103,6 +105,45 @@
         <div class="svc-head"><span class="dot"></span><strong>Real-time data</strong><span class="svc-detail"></span></div>
       </div>
 
+      <div class="svc" data-svc="whatsapp">
+        <div class="svc-head"><span class="dot"></span><strong>WhatsApp Business</strong><span class="svc-detail"></span></div>
+        <p class="hint">Meta app → WhatsApp → API Setup. Webhook URL is
+          <code>https://your-host/api/whatsapp/webhook</code>, verify token is whatever
+          you put below. Subscribe the app to the <code>messages</code> field.</p>
+        <input data-key="WHATSAPP_TOKEN" placeholder="WHATSAPP_TOKEN — permanent system-user token" autocomplete="off">
+        <input data-key="WHATSAPP_PHONE_ID" placeholder="WHATSAPP_PHONE_ID" autocomplete="off">
+        <input data-key="WHATSAPP_VERIFY_TOKEN" placeholder="WHATSAPP_VERIFY_TOKEN — you choose this" autocomplete="off">
+        <input data-key="WHATSAPP_APP_SECRET" placeholder="WHATSAPP_APP_SECRET — signs the webhook" autocomplete="off">
+        <input data-key="WHATSAPP_OWNER" placeholder="Your number with country code, e.g. 14155551234" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="google_workspace">
+        <div class="svc-head"><span class="dot"></span><strong>Google Workspace</strong><span class="svc-detail"></span></div>
+        <p class="hint">Run <code>python -m server.integrations.google_ws</code> on the
+          server to get a refresh token, then paste the three values it prints.</p>
+        <input data-key="GOOGLE_CLIENT_ID" placeholder="GOOGLE_CLIENT_ID" autocomplete="off">
+        <input data-key="GOOGLE_CLIENT_SECRET" placeholder="GOOGLE_CLIENT_SECRET" autocomplete="off">
+        <input data-key="GOOGLE_REFRESH_TOKEN" placeholder="GOOGLE_REFRESH_TOKEN" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="microsoft_365">
+        <div class="svc-head"><span class="dot"></span><strong>Microsoft 365</strong><span class="svc-detail"></span></div>
+        <p class="hint">Run <code>python -m server.integrations.microsoft_ws</code> on the
+          server to get a refresh token.</p>
+        <input data-key="MS_CLIENT_ID" placeholder="MS_CLIENT_ID" autocomplete="off">
+        <input data-key="MS_CLIENT_SECRET" placeholder="MS_CLIENT_SECRET (blank for public client)" autocomplete="off">
+        <input data-key="MS_TENANT" placeholder="MS_TENANT (default: common)" autocomplete="off">
+        <input data-key="MS_REFRESH_TOKEN" placeholder="MS_REFRESH_TOKEN" autocomplete="off">
+      </div>
+
+      <div class="svc" data-svc="glasses">
+        <div class="svc-head"><span class="dot"></span><strong>Meta glasses</strong><span class="svc-detail"></span></div>
+        <p class="hint">No open streaming API exists yet for Ray-Ban Meta glasses — say
+          "Hey Meta, send a photo" to WhatsApp above (fast, works today), or point this at
+          a folder your camera roll syncs to (iCloud Photos, Google Photos, Syncthing).</p>
+        <input data-key="GLASSES_WATCH_DIR" placeholder="Folder to watch for new captures" autocomplete="off">
+      </div>
+
       <div class="settings-actions">
         <button id="settings-save">Save &amp; connect</button>
         <button id="settings-close" class="ghost">Close</button>
@@ -160,6 +201,76 @@
     <div class="card">
       <h3>Shopping list</h3>
       <div id="ws-shopping" class="rows"></div>
+    </div>
+  </section>
+
+  <!-- ── Style: the taste profile and the scouting queue ─────────── -->
+  <section id="style" class="hidden">
+    <div class="card">
+      <h3>Taste profile <span id="style-stat" class="badge">–</span></h3>
+      <pre id="style-summary" class="slip"></pre>
+    </div>
+
+    <div class="card">
+      <h3>Learned attributes</h3>
+      <div id="style-attributes" class="rows"></div>
+    </div>
+
+    <div class="card">
+      <h3>Scouting queue <span id="style-queue-count" class="badge">0</span></h3>
+      <p class="hint">Sent to WhatsApp for a verdict — tap Love / Pass there, or record
+        one here.</p>
+      <div id="style-queue" class="grid"></div>
+    </div>
+
+    <div class="card">
+      <h3>Lookbook</h3>
+      <div id="style-looks" class="rows"></div>
+    </div>
+  </section>
+
+  <!-- ── Security: threat status, audit trail, fingerprint devices ── -->
+  <section id="security" class="hidden">
+    <div class="card">
+      <h3>Posture <span id="sec-posture" class="badge">–</span></h3>
+      <p id="sec-summary" class="hint"></p>
+      <div class="settings-actions">
+        <button id="sec-scan">Run a full check</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Fingerprint devices <span id="sec-device-count" class="badge">0</span></h3>
+      <p class="hint">Touch ID, Face ID, Windows Hello or Android fingerprint. This is
+        what gates shutdown, spending, sending mail, and Mehltani's own code changes —
+        it stops other people, not you. See Guardian's status for what that really means.</p>
+      <div id="sec-devices" class="rows"></div>
+      <div class="settings-actions">
+        <input id="sec-device-label" placeholder="Label this device, e.g. 'my phone'" autocomplete="off">
+        <button id="sec-enroll">Enrol this device's fingerprint</button>
+      </div>
+      <p id="sec-enroll-msg" class="hint"></p>
+    </div>
+
+    <div class="card">
+      <h3>Confirm identity</h3>
+      <p class="hint">Get a five-minute presence token for a protected action — paste it
+        back into chat when I ask for one, or it's applied automatically to the next
+        confirm-required request from this browser.</p>
+      <div class="settings-actions">
+        <button id="sec-confirm">Touch to confirm</button>
+      </div>
+      <p id="sec-confirm-msg" class="hint"></p>
+    </div>
+
+    <div class="card">
+      <h3>Threat log</h3>
+      <div id="sec-threats" class="rows"></div>
+    </div>
+
+    <div class="card">
+      <h3>Recent audit trail</h3>
+      <div id="sec-audit" class="rows"></div>
     </div>
   </section>
 
