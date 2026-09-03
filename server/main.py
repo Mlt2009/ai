@@ -17,11 +17,12 @@ import httpx
 import psutil
 import uvicorn
 from fastapi import Body, FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import brain, config, ledger, receipt_layout
+from . import brain, config, guardian, ledger, receipt_layout, style_memory
 from .agents import council_agent, scan_agent
+from .integrations import glasses, google_ws, microsoft_ws, whatsapp
 from .orchestrator import Orchestrator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -29,12 +30,16 @@ log = logging.getLogger("server")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-app = FastAPI(title="AI Companion")
+app = FastAPI(title="Mehltani")
 atlas = Orchestrator()
+guardian.snapshot_baseline()
 
 # Paths that must stay reachable without a token, or you could never log in.
+# The WhatsApp webhook is its own case: Meta calls it directly and cannot carry
+# our ACCESS_TOKEN, so it is authenticated separately — verify-token on the GET
+# handshake, HMAC signature on every POST (see integrations/whatsapp.py).
 OPEN_PATHS = {"/", "/index.html", "/style.css", "/app.js", "/manifest.json",
-              "/sw.js", "/icon.svg", "/api/auth"}
+              "/sw.js", "/icon.svg", "/api/auth", "/api/whatsapp/webhook"}
 
 
 @app.middleware("http")
@@ -46,7 +51,7 @@ async def require_token(request: Request, call_next):
     """
     if config.ACCESS_TOKEN and request.url.path.startswith("/api/") \
             and request.url.path not in OPEN_PATHS:
-        supplied = (request.headers.get("x-atlas-token")
+        supplied = (request.headers.get("x-mehltani-token")
                     or request.query_params.get("token", ""))
         if supplied != config.ACCESS_TOKEN:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -67,7 +72,7 @@ async def auth_needed(token: str = ""):
 
 @app.get("/api/team")
 async def team():
-    return {"orchestrator": "Atlas", "agents": atlas.team_roster()}
+    return {"orchestrator": "Mehltani", "agents": atlas.team_roster()}
 
 
 @app.get("/api/stats")
@@ -135,6 +140,8 @@ async def workspace():
         "shopping": ledger.list_items()[:12],
         "photos": sorted((p.name for p in scan_agent.uploads_dir().glob("*.*")),
                          reverse=True)[:6],
+        "style": style_memory.stats(),
+        "guardian": guardian.status(),
     }
 
 
@@ -146,6 +153,207 @@ async def broadcast(body: dict = Body(...)):
         return JSONResponse({"error": "prompt is required"}, status_code=400)
     results = await council_agent.broadcast(prompt)
     return {"prompt": prompt, "results": results}
+
+
+# ── style profile ────────────────────────────────────────────────
+
+@app.get("/api/style")
+async def style_profile():
+    return {"summary": style_memory.summary(),
+            "attributes": style_memory.attribute_scores()[:40],
+            "traits": style_memory.list_traits(),
+            "looks": style_memory.list_looks(limit=12),
+            "verdicts": style_memory.list_verdicts(limit=20),
+            "stats": style_memory.stats()}
+
+
+@app.get("/api/style/scouted")
+async def style_scouted(state: str = ""):
+    items = style_memory.list_scouted(state=state)
+    return {"count": len(items), "items": items}
+
+
+# ── guardian: security dashboard ────────────────────────────────
+
+@app.get("/api/guardian/status")
+async def guardian_status():
+    return guardian.status()
+
+
+@app.post("/api/guardian/scan")
+async def guardian_run_scan():
+    return guardian.scan()
+
+
+@app.get("/api/guardian/audit")
+async def guardian_audit(limit: int = 50, denied_only: bool = False):
+    return {"entries": guardian.audit_log(limit=limit, only_denied=denied_only)}
+
+
+@app.get("/api/guardian/threats")
+async def guardian_threats(unresolved_only: bool = False):
+    return {"threats": guardian.threat_log(unresolved_only=unresolved_only)}
+
+
+@app.post("/api/guardian/threats/{threat_id}/resolve")
+async def guardian_resolve_threat(threat_id: int):
+    return {"resolved": guardian.resolve_threat(threat_id)}
+
+
+@app.post("/api/guardian/lockdown")
+async def guardian_lockdown(body: dict = Body(default={})):
+    return guardian.engage_lockdown(body.get("reason", "requested from dashboard"))
+
+
+# ── guardian: WebAuthn (Touch ID / Face ID / Windows Hello / Android) ──
+#
+# Two independent ceremonies, both browser-driven — a model cannot trigger or
+# satisfy either, which is the whole point (see guardian.py's module docstring).
+# `finish_*` verifies the browser's response against the challenge issued by
+# `begin_*`; a successful authentication mints a short-lived presence token the
+# client then passes back as `presence_token` on a protected tool call.
+
+@app.get("/api/guardian/biometrics")
+async def guardian_biometrics():
+    available, detail = guardian.biometrics_available()
+    return {"available": available, "detail": detail,
+            "enrolled": guardian.credentials(), "gate_on": config.REQUIRE_BIOMETRIC}
+
+
+@app.post("/api/guardian/register/begin")
+async def guardian_register_begin(body: dict = Body(default={})):
+    try:
+        return guardian.begin_registration(body.get("label", "my device"))
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/guardian/register/finish")
+async def guardian_register_finish(body: dict = Body(...)):
+    try:
+        return guardian.finish_registration(
+            body.get("state", ""), body.get("credential", {}),
+            presence_token=body.get("presence_token", ""),
+            recovery_key=body.get("recovery_key", ""))
+    except guardian.Denied as exc:
+        return JSONResponse({"error": str(exc), "needs_fingerprint": True}, status_code=403)
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/guardian/verify/begin")
+async def guardian_verify_begin(body: dict = Body(default={})):
+    try:
+        return guardian.begin_authentication(body.get("op", ""))
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/guardian/verify/finish")
+async def guardian_verify_finish(body: dict = Body(...)):
+    try:
+        result = guardian.finish_authentication(body.get("state", ""),
+                                                body.get("credential", {}))
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if body.get("op") == "lockdown_clear":
+        guardian.clear_lockdown()
+    return result
+
+
+@app.delete("/api/guardian/devices/{credential_id}")
+async def guardian_forget_device(credential_id: str):
+    try:
+        return {"removed": guardian.forget_credential(credential_id)}
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+# ── WhatsApp webhook ─────────────────────────────────────────────
+#
+# Meta calls this directly, so it cannot carry our own ACCESS_TOKEN — see
+# integrations/whatsapp.py for the verify-token handshake and HMAC signature
+# check that authenticate it instead.
+
+@app.get("/api/whatsapp/webhook")
+async def whatsapp_verify(request: Request):
+    ok, body = whatsapp.verify_subscription(
+        request.query_params.get("hub.mode", ""),
+        request.query_params.get("hub.verify_token", ""),
+        request.query_params.get("hub.challenge", ""))
+    if not ok:
+        guardian.raise_threat("whatsapp_webhook", body, severity="warn")
+        return JSONResponse({"error": body}, status_code=403)
+    return PlainTextResponse(body)
+
+
+@app.post("/api/whatsapp/webhook")
+async def whatsapp_incoming(request: Request):
+    raw = await request.body()
+    if not whatsapp.verify_signature(raw, request.headers.get("x-hub-signature-256", "")):
+        guardian.raise_threat("whatsapp_webhook", "signature verification failed",
+                              severity="critical")
+        return JSONResponse({"error": "bad signature"}, status_code=401)
+
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "bad payload"}, status_code=400)
+
+    for message in whatsapp.parse_webhook(body):
+        whatsapp.remember(message)
+        await whatsapp.mark_read(message["id"])
+        asyncio.create_task(_handle_whatsapp_message(message))
+    return {"received": True}
+
+
+async def _handle_whatsapp_message(message: dict) -> None:
+    """Route an inbound WhatsApp message into the same brain as the voice channel.
+
+    A tap on a "Love it" / "Pass" button is turned into a plain sentence before
+    it reaches the orchestrator, so the same tool-calling loop that handles
+    voice handles the approve/pass loop with no separate code path to drift
+    out of sync.
+    """
+    text = message.get("text", "")
+    if message.get("media_id") and not text:
+        try:
+            target = scan_agent.uploads_dir() / f"whatsapp_{message['id'][:16]}.jpg"
+            await whatsapp.download_media(message["media_id"], target)
+            text = (f"A photo just came in on WhatsApp (image_id: {target.name}). "
+                    "Look at it and respond usefully — if it looks like a piece of "
+                    "clothing or a look, offer a quick read; if it's a receipt, "
+                    "offer to scan it.")
+        except Exception as exc:
+            log.warning("could not download WhatsApp media: %s", exc)
+            return
+    if message.get("button_reply"):
+        text = f"On WhatsApp I just tapped: {message['button_reply']}"
+    if not text.strip():
+        return
+
+    session_id = f"whatsapp:{message.get('from', 'unknown')}"
+    try:
+        async for event in atlas.respond(session_id, text):
+            if event.get("type") == "reply" and event.get("text"):
+                await whatsapp.send_text(event["text"], to=message.get("from", ""))
+    except Exception:
+        log.exception("WhatsApp turn failed")
+        await whatsapp.send_text(
+            "Something went wrong on my end handling that — try again in a moment.",
+            to=message.get("from", ""))
+
+
+# ── glasses ───────────────────────────────────────────────────────
+
+@app.get("/api/glasses/status")
+async def glasses_status():
+    return glasses.status()
+
+
+@app.post("/api/glasses/ingest")
+async def glasses_ingest_now():
+    return {"ingested": glasses.ingest()}
 
 
 def _mask(secret: str) -> str:
@@ -192,10 +400,12 @@ async def _service_checks() -> dict:
             return {"on": False, "detail": "CUPS not installed on server"}
         return {"on": True, "detail": config.CUPS_PRINTER or "system default printer"}
 
-    gemini, ha, octo, cups = await asyncio.gather(
-        check_gemini(), check_ha(), check_octoprint(), check_cups())
+    gemini, ha, octo, cups, wa, google, ms = await asyncio.gather(
+        check_gemini(), check_ha(), check_octoprint(), check_cups(),
+        whatsapp.check(), google_ws.check(), microsoft_ws.check())
     crew = council_agent.companions()
     names = ", ".join(c["name"] for c in crew)
+    biometrics_on, biometrics_detail = guardian.biometrics_available()
     return {
         "gemini": gemini,
         "home_assistant": ha,
@@ -213,6 +423,15 @@ async def _service_checks() -> dict:
         "remote": {"on": bool(config.ACCESS_TOKEN),
                    "detail": "access token set" if config.ACCESS_TOKEN
                              else "no token — keep this on your own network"},
+        "whatsapp": wa,
+        "google_workspace": google,
+        "microsoft_365": ms,
+        "glasses": {"on": glasses.watch_configured(),
+                    "detail": glasses.status()["detail"]},
+        "guardian": {"on": biometrics_on and len(guardian.credentials()) > 0,
+                    "detail": (f"{len(guardian.credentials())} device(s) enrolled"
+                              if biometrics_on and guardian.credentials()
+                              else biometrics_detail)},
     }
 
 
@@ -245,6 +464,27 @@ async def get_settings():
             "FILE_ROOTS": config.FILE_ROOTS,
             "ALLOW_FILE_WRITE": config.ALLOW_FILE_WRITE,
             "ACCESS_TOKEN": _mask(config.ACCESS_TOKEN),
+            "OWNER_NAME": config.OWNER_NAME,
+            "RP_ID": config.RP_ID,
+            "EXTRA_ORIGINS": config.EXTRA_ORIGINS,
+            "REQUIRE_BIOMETRIC": config.REQUIRE_BIOMETRIC,
+            "RECOVERY_KEY": _mask(config.RECOVERY_KEY),
+            "AUTO_LOCKDOWN": config.AUTO_LOCKDOWN,
+            "WHATSAPP_TOKEN": _mask(config.WHATSAPP_TOKEN),
+            "WHATSAPP_PHONE_ID": config.WHATSAPP_PHONE_ID,
+            "WHATSAPP_VERIFY_TOKEN": _mask(config.WHATSAPP_VERIFY_TOKEN),
+            "WHATSAPP_APP_SECRET": _mask(config.WHATSAPP_APP_SECRET),
+            "WHATSAPP_OWNER": config.WHATSAPP_OWNER,
+            "GOOGLE_CLIENT_ID": config.GOOGLE_CLIENT_ID,
+            "GOOGLE_CLIENT_SECRET": _mask(config.GOOGLE_CLIENT_SECRET),
+            "GOOGLE_REFRESH_TOKEN": _mask(config.GOOGLE_REFRESH_TOKEN),
+            "MS_CLIENT_ID": config.MS_CLIENT_ID,
+            "MS_CLIENT_SECRET": _mask(config.MS_CLIENT_SECRET),
+            "MS_TENANT": config.MS_TENANT,
+            "MS_REFRESH_TOKEN": _mask(config.MS_REFRESH_TOKEN),
+            "GLASSES_WATCH_DIR": config.GLASSES_WATCH_DIR,
+            "GEMINI_IMAGE_MODEL": config.GEMINI_IMAGE_MODEL,
+            "OPENAI_IMAGE_MODEL": config.OPENAI_IMAGE_MODEL,
         },
         "services": await _service_checks(),
     }
@@ -257,18 +497,19 @@ def env_elevenlabs() -> str:
 
 @app.post("/api/settings")
 async def save_settings(updates: dict = Body(...)):
-    """Save keys from the Settings panel, hot-reload config, rebuild Atlas."""
+    """Save keys from the Settings panel, hot-reload config, rebuild Mehltani."""
     global atlas
     # Ignore masked placeholders sent back unchanged, and blank secrets.
     cleaned = {k: v for k, v in updates.items()
                if isinstance(v, (str, int, float, bool)) and "••••" not in str(v)}
-    for flag in ("ALLOW_SHELL", "ALLOW_FILE_WRITE"):
+    for flag in ("ALLOW_SHELL", "ALLOW_FILE_WRITE", "REQUIRE_BIOMETRIC", "AUTO_LOCKDOWN"):
         if flag in cleaned:
             cleaned[flag] = "true" if str(cleaned[flag]).lower() in ("true", "1") else "false"
     changed = config.save(cleaned)
     if changed:
         atlas = Orchestrator()
-        log.info("settings updated (%s) — Atlas rebuilt", ", ".join(changed))
+        guardian.snapshot_baseline()
+        log.info("settings updated (%s) — Mehltani rebuilt", ", ".join(changed))
     return {"changed": changed, "services": await _service_checks()}
 
 
@@ -333,7 +574,7 @@ def lan_ip() -> str:
 def print_banner() -> None:
     url = f"http://{lan_ip()}:{config.PORT}"
     print("\n" + "=" * 52)
-    print("  AI COMPANION — Atlas is online")
+    print("  MEHLTANI is online")
     print(f"  On this computer : http://localhost:{config.PORT}")
     print(f"  On your phone    : {url}")
     print("  (same Wi-Fi network — scan the QR code below,")
